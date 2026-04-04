@@ -213,6 +213,10 @@ namespace gamething
         private const float bossOrbitHitCooldownTime = 0.3f;
 
         private int bossesDefeated = 0;
+
+        private int bossesDefeatedOnDifficulty = 0;
+        private float currentBossMaxHealth = 100f;
+        private float currentBossShootRate = 2f;
         // --- FPS ---
         private int fpsFrames = 0;
         private float fpsTimer = 0f;
@@ -298,6 +302,33 @@ namespace gamething
         private const float parasiteSize = 12f;
         private const float parasiticDecayRate = 0.3f;
         private bool parasiteDecayKill = false;
+        // --- Other status effects ---
+        private List<bool> enemyIsFrenzied = new List<bool>();
+        private List<bool> enemyIsPhasing = new List<bool>();
+        private List<bool> enemyIsZigzag = new List<bool>();
+        private List<bool> enemyIsCharging = new List<bool>();
+        private List<bool> enemyIsArmored = new List<bool>();
+        private List<bool> enemyIsRegenerating = new List<bool>();
+        private List<bool> enemyIsReflective = new List<bool>();
+        private List<bool> enemyIsBerserker = new List<bool>();
+        private List<bool> enemyIsCorrupted = new List<bool>();
+
+        private List<bool> enemyArmorBroken = new List<bool>();
+        private List<float> enemyChargeCooldown = new List<float>();
+        private List<float> enemyChargeTimer = new List<float>();
+        private List<bool> enemyIsCharging_Active = new List<bool>();
+        private List<float> enemyChargeVelX = new List<float>();
+        private List<float> enemyChargeVelY = new List<float>();
+        private List<float> enemyFrenziedAngle = new List<float>();
+        private List<float> enemyZigzagTimer = new List<float>();
+        private List<float> enemyZigzagDirection = new List<float>();
+        private List<float> enemyPhasingTimer = new List<float>();
+        private List<bool> enemyIsVisible = new List<bool>();
+        private List<(float x, float y, float timer)> corruptedTrails = new List<(float x, float y, float timer)>();
+
+        private float effectChance_Normal = 0.05f;
+        private float effectChance_Hard = 0.10f;
+        private float effectChance_Nightmare = 0.15f;
         // --- Difficulty ---
         private int difficulty = 0; // 0=Easy, 1=Normal, 2=Hard, 3=Nightmare
         private int highestUnlockedDifficulty = 0;
@@ -332,6 +363,7 @@ namespace gamething
                 scale = Math.Min(scaleX, scaleY);
                 darkMode = true;
                 LoadDifficultyUnlocks();
+                ApplyDifficulty();
                 ResetEnemies();
                 ResetGame();
                 ShowMainMenu();
@@ -787,7 +819,7 @@ namespace gamething
                 {
                     bossSpawnTimer = 0f;
                     bossAlive = true;
-                    bossHealth = bossMaxHealth;
+                    bossHealth = currentBossMaxHealth;
                     Random rng = new Random();
                     int side = rng.Next(4);
                     switch (side)
@@ -854,7 +886,7 @@ namespace gamething
                     bossHitCooldown -= deltaTime;
 
                 bossShootTimer += deltaTime;
-                if (bossShootTimer >= bossShootRate)
+                if (bossShootTimer >= currentBossShootRate)
                 {
                     bossShootTimer = 0f;
                     float targetX = decoyActive ? decoyX : posX + playerSize / 2;
@@ -905,6 +937,8 @@ namespace gamething
                         enemyIsParasitic.Add(newIsParasitic);
                         enemyShootTimers.Add(0f);
                         enemyFlameTimers.Add(0f);
+                        int newIdx = enemies.Count - 1;
+                        InitEnemyEffects(newIdx);
                         enemyHealth.Add(newIsTank ? 8f : newCanShoot ? 4f : newIsRunner ? 1f : 2f);
                         enemySpawnTimer = 0f;
                     }
@@ -958,12 +992,20 @@ namespace gamething
                             }
                         }
                     }
+                    bool isPhased = i < enemyIsPhasing.Count && enemyIsPhasing[i] && !enemyIsVisible[i];
                     if (!isDashing && enemies[i].x < posX + playerSize && enemies[i].x + boxSize > posX &&
                         enemies[i].y < posY + playerSize && enemies[i].y + boxSize > posY)
                     {
                         if (hitCooldown <= 0)
                         {
-                            float dmg = i < enemyIsTank.Count && enemyIsTank[i] ? enemyDamage * 3f : enemyDamage;
+                            bool isTank = i < enemyIsTank.Count && enemyIsTank[i];
+                            bool canShoot = i < enemyCanShoot.Count && enemyCanShoot[i];
+                            bool isRunner = i < enemyIsRunner.Count && enemyIsRunner[i];
+                            bool isBerserker = i < enemyIsBerserker.Count && enemyIsBerserker[i];
+                            float maxHp = isTank ? 8f : canShoot ? 4f : isRunner ? 1f : 2f;
+                            bool berserkerActive = isBerserker && enemyHealth[i] < maxHp * 0.5f;
+                            float dmg = isTank ? enemyDamage * 3f : enemyDamage;
+                            if (berserkerActive) dmg *= 2f;
                             health -= dmg;
                             if (bloodMoney)
                             {
@@ -1083,11 +1125,148 @@ namespace gamething
                         }
                     }
 
+                    if (i >= enemyIsFrenzied.Count) continue;
+
+                    // Frenzied - erratic movement
+                    if (enemyIsFrenzied[i])
+                    {
+                        enemyFrenziedAngle[i] += (float)(new Random().NextDouble() * 2 - 1) * 5f * deltaTime;
+                        float fDirX = (float)Math.Cos(enemyFrenziedAngle[i]);
+                        float fDirY = (float)Math.Sin(enemyFrenziedAngle[i]);
+                        float blend = 0.6f;
+                        float tDirX = dirX / Math.Max(0.01f, dist);
+                        float tDirY = dirY / Math.Max(0.01f, dist);
+                        fDirX = fDirX * (1f - blend) + tDirX * blend;
+                        fDirY = fDirY * (1f - blend) + tDirY * blend;
+                        float fLen = (float)Math.Sqrt(fDirX * fDirX + fDirY * fDirY);
+                        if (fLen > 0) { fDirX /= fLen; fDirY /= fLen; }
+                        bool isRunner = i < enemyIsRunner.Count && enemyIsRunner[i];
+                        float fSpeed = isRunner ? currentEnemySpeed * runnerSpeedMultiplier : currentEnemySpeed;
+                        float newFX = enemies[i].x + fDirX * fSpeed * deltaTime * 60;
+                        float newFY = enemies[i].y + fDirY * fSpeed * deltaTime * 60;
+                        if (!CollidesWithWall(newFX, newFY, boxSize))
+                            enemies[i] = (newFX, newFY);
+                    }
+
+                    // Zigzag movement
+                    if (enemyIsZigzag[i])
+                    {
+                        enemyZigzagTimer[i] += deltaTime;
+                        if (enemyZigzagTimer[i] >= 0.5f)
+                        {
+                            enemyZigzagTimer[i] = 0f;
+                            enemyZigzagDirection[i] *= -1f;
+                        }
+                        float perpX = -dirY / Math.Max(0.01f, dist);
+                        float perpY = dirX / Math.Max(0.01f, dist);
+                        float zigSpeed = currentEnemySpeed * 0.5f;
+                        float newZX = enemies[i].x + perpX * zigSpeed * enemyZigzagDirection[i] * deltaTime * 60;
+                        float newZY = enemies[i].y + perpY * zigSpeed * enemyZigzagDirection[i] * deltaTime * 60;
+                        if (!CollidesWithWall(newZX, newZY, boxSize))
+                            enemies[i] = (newZX, newZY);
+                    }
+
+                    // Charging
+                    if (enemyIsCharging[i])
+                    {
+                        if (enemyIsCharging_Active[i])
+                        {
+                            enemyChargeTimer[i] -= deltaTime;
+                            float newCX = enemies[i].x + enemyChargeVelX[i] * deltaTime * 60;
+                            float newCY = enemies[i].y + enemyChargeVelY[i] * deltaTime * 60;
+                            if (!CollidesWithWall(newCX, newCY, boxSize))
+                                enemies[i] = (newCX, newCY);
+                            if (enemyChargeTimer[i] <= 0)
+                            {
+                                enemyIsCharging_Active[i] = false;
+                                enemyChargeCooldown[i] = 3f;
+                            }
+                        }
+                        else
+                        {
+                            enemyChargeCooldown[i] -= deltaTime;
+                            if (enemyChargeCooldown[i] <= 0 && dist < 400f * scale)
+                            {
+                                enemyIsCharging_Active[i] = true;
+                                enemyChargeTimer[i] = 0.4f;
+                                float cLen = Math.Max(0.01f, dist);
+                                enemyChargeVelX[i] = (dirX / cLen) * currentEnemySpeed * 4f;
+                                enemyChargeVelY[i] = (dirY / cLen) * currentEnemySpeed * 4f;
+                            }
+                        }
+                    }
+
+                    // Armored - first hit blocked
+                    if (enemyIsArmored[i] && !enemyArmorBroken[i])
+                    {
+                        // Armor is checked in DamageEnemy
+                    }
+
+                    // Regenerating
+                    if (enemyIsRegenerating[i])
+                    {
+                        float maxHp = i < enemyIsTank.Count && enemyIsTank[i] ? 8f :
+                                      i < enemyCanShoot.Count && enemyCanShoot[i] ? 4f :
+                                      i < enemyIsRunner.Count && enemyIsRunner[i] ? 1f : 2f;
+                        enemyHealth[i] = Math.Min(maxHp, enemyHealth[i] + 0.5f * deltaTime);
+                    }
+
+                    // Phasing
+                    if (enemyIsPhasing[i])
+                    {
+                        enemyPhasingTimer[i] += deltaTime;
+                        enemyIsVisible[i] = (int)(enemyPhasingTimer[i] / 1.5f) % 2 == 0;
+                        if (!enemyIsVisible[i])
+                        {
+                            // Skip collision with player while phased
+                        }
+                    }
+
+                    // Berserker - double speed and damage below 50% HP
+                    // Applied during movement and damage sections
+
+                    // Corrupted - leave trail
+                    if (enemyIsCorrupted[i])
+                    {
+                        corruptedTrails.Add((enemies[i].x + boxSize / 2, enemies[i].y + boxSize / 2, 2f));
+                    }
+
                     (float ex, float ey) = PushOutOfWalls(enemies[i].x, enemies[i].y, boxSize);
                     enemies[i] = (ex, ey);
                 }
             }
-
+            // Corrupted trails
+            var newTrails = new List<(float x, float y, float timer)>();
+            foreach (var t in corruptedTrails)
+            {
+                float newTimer = t.timer - deltaTime;
+                if (newTimer > 0)
+                {
+                    float dx = posX + playerSize / 2 - t.x;
+                    float dy = posY + playerSize / 2 - t.y;
+                    float dist2 = (float)Math.Sqrt(dx * dx + dy * dy);
+                    if (dist2 < boxSize * 2)
+                    {
+                        if (hitCooldown <= 0)
+                        {
+                            health -= 0.5f * deltaTime;
+                            if (health <= 0)
+                            {
+                                health = 0;
+                                isPaused = true;
+                                ResetEnemies();
+                                enemySpawnTimer = 0f;
+                                bool retry = ShowDeathScreen();
+                                lastTick = DateTime.Now;
+                                if (retry) { isPaused = false; ApplyDifficulty(); ResetGame(); }
+                                else { ResetGame(); ApplyDifficulty(); ShowMainMenu(); }
+                            }
+                        }
+                    }
+                    newTrails.Add((t.x, t.y, newTimer));
+                }
+            }
+            corruptedTrails = newTrails;
             for (int i = 0; i < enemies.Count; i++)
             {
                 if (!enemyAlive[i]) continue;
@@ -1137,6 +1316,7 @@ namespace gamething
                         else enemyIsRunner.Add(respawnIsRunner);
                         if (i < enemyIsParasitic.Count) enemyIsParasitic[i] = respawnIsParasitic;
                         else enemyIsParasitic.Add(respawnIsParasitic);
+                        InitEnemyEffects(i);
                         enemyShootTimers[i] = 0f;
                         enemyHealth[i] = respawnIsTank ? 8f : respawnCanShoot ? 4f : respawnIsRunner ? 1f : 2f;
                     }
@@ -1252,6 +1432,9 @@ namespace gamething
                             enemyHealth.Add(wIsTank ? 8f : wCanShoot ? 4f : wIsRunner ? 1f : 2f);
                         }
                         bossesDefeated++;
+                        bossesDefeatedOnDifficulty++;
+                        currentBossMaxHealth += 25f;
+                        currentBossShootRate = Math.Max(0.5f, currentBossShootRate - 0.2f);
                         float moneyToGive = 500 * scoreMultiplier;
                         score += (int)(scoreMultiplier);
                         totalScore += (int)(scoreMultiplier);
@@ -1565,6 +1748,9 @@ namespace gamething
                                 enemyHealth.Add(wIsTank ? 8f : wCanShoot ? 4f : wIsRunner ? 1f : 2f);
                             }
                             bossesDefeated++;
+                            bossesDefeatedOnDifficulty++;
+                            currentBossMaxHealth += 25f;
+                            currentBossShootRate = Math.Max(0.5f, currentBossShootRate - 0.2f);
                             float moneyToGive = 500 * scoreMultiplier;
                             score += (int)(scoreMultiplier);
                             totalScore += (int)(scoreMultiplier);
@@ -1958,7 +2144,16 @@ namespace gamething
             Brush barTextBrush = Brushes.Black;
             String Ufont = "Arial";
 
-
+            // Corrupted trails
+            foreach (var t in corruptedTrails)
+            {
+                float alpha = t.timer / 2f;
+                int a = (int)(alpha * 150);
+                int tSize = (int)(boxSize * 0.6f);
+                e.Graphics.FillEllipse(
+                    new SolidBrush(Color.FromArgb(a, 80, 0, 150)),
+                    t.x - tSize / 2, t.y - tSize / 2, tSize, tSize);
+            }
             if (speedTrapActive)
             {
                 float alpha = speedTrapTimer / speedTrapDuration;
@@ -1984,7 +2179,7 @@ namespace gamething
                     e.Graphics.DrawPath(new Pen(darkMode ? Color.White : Color.Black, 3), path);
                 }
                 // Boss health bar
-                float bossHpFill = bossHealth / bossMaxHealth;
+                float bossHpFill = bossHealth / currentBossMaxHealth;
                 int bossBarW = (int)scaledBossSize;
                 int bossBarH = 8;
                 e.Graphics.FillRectangle(Brushes.DarkRed, bossX, bossY - 14, bossBarW, bossBarH);
@@ -2000,7 +2195,7 @@ namespace gamething
                 e.Graphics.FillRectangle(Brushes.DarkRed, bossBarX, bossBarY, bossBarWidth, bossBarHeight);
                 e.Graphics.FillRectangle(Brushes.Red, bossBarX, bossBarY, (int)(bossBarWidth * bossHpFill), bossBarHeight);
                 e.Graphics.DrawRectangle(borderPen, bossBarX, bossBarY, bossBarWidth, bossBarHeight);
-                e.Graphics.DrawString("BOSS HP: " + (int)bossHealth + " / " + (int)bossMaxHealth, new Font(Ufont, 10 * scaleY, FontStyle.Bold), barTextBrush, bossBarX + bossBarWidth / 2 - 60, bossBarY);
+                e.Graphics.DrawString("BOSS HP: " + (int)bossHealth + " / " + (int)currentBossMaxHealth, new Font(Ufont, 10 * scaleY, FontStyle.Bold), barTextBrush, bossBarX + bossBarWidth / 2 - 60, bossBarY);
             }
             else if (gameStartTimer > gameStartDelay)
             {
@@ -2029,7 +2224,7 @@ namespace gamething
                 e.Graphics.FillPath(new SolidBrush(playerColor), path);
                 e.Graphics.DrawPath(borderPen, path);
             }
-
+            // Draw enemies
             for (int i = 0; i < enemies.Count; i++)
             {
                 if (!enemyAlive[i]) continue;
@@ -2037,8 +2232,13 @@ namespace gamething
                 bool isTank = i < enemyIsTank.Count && enemyIsTank[i];
                 bool canShoot = i < enemyCanShoot.Count && enemyCanShoot[i];
                 bool isSlowed = orbitalStrike && orbitalSlowedEnemies.Contains(i);
+                bool isParasitic = i < enemyIsParasitic.Count && enemyIsParasitic[i];
+                bool isPhasing = i < enemyIsPhasing.Count && enemyIsPhasing[i];
+                bool isCurrentlyVisible = i < enemyIsVisible.Count ? enemyIsVisible[i] : true;
+                int enemyAlpha = isPhasing && !isCurrentlyVisible ? 60 : 255;
                 int eSize = isTank ? boxSize + 20 : canShoot ? boxSize + 8 : isRunner ? boxSize - 8 : boxSize;
                 int r = Math.Max(1, eSize / 5);
+
                 using (System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath())
                 {
                     path.AddArc(enemies[i].x, enemies[i].y, r, r, 180, 90);
@@ -2046,20 +2246,22 @@ namespace gamething
                     path.AddArc(enemies[i].x + eSize - r, enemies[i].y + eSize - r, r, r, 0, 90);
                     path.AddArc(enemies[i].x, enemies[i].y + eSize - r, r, r, 90, 90);
                     path.CloseFigure();
-                    bool isParasitic = i < enemyIsParasitic.Count && enemyIsParasitic[i];
 
-                    Brush enemyBrush = isSlowed ? Brushes.MediumPurple :
+                    Brush enemyBrush = isSlowed ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.MediumPurple)) :
                                        isParasitic ? new SolidBrush(Color.FromArgb(
-                                           isTank ? 120 : canShoot ? 200 : isRunner ? 255 : 180,
+                                           enemyAlpha,
                                            isTank ? Color.DarkRed.R : canShoot ? Color.OrangeRed.R : isRunner ? Color.HotPink.R : Color.Red.R,
                                            0,
                                            isTank ? (int)(Color.DarkRed.B * 0.5f + 80) : 80)) :
-                                       isTank ? Brushes.DarkRed :
-                                       canShoot ? Brushes.OrangeRed :
-                                       isRunner ? Brushes.HotPink : Brushes.Red;
+                                       isTank ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.DarkRed)) :
+                                       canShoot ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.OrangeRed)) :
+                                       isRunner ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.HotPink)) :
+                                       new SolidBrush(Color.FromArgb(enemyAlpha, Color.Red));
+
                     e.Graphics.FillPath(enemyBrush, path);
-                    e.Graphics.DrawPath(borderPen, path);
+                    e.Graphics.DrawPath(new Pen(Color.FromArgb(enemyAlpha, borderPen.Color)), path);
                 }
+
                 if (i < enemyHealth.Count)
                 {
                     float maxEHp = isTank ? 8f : canShoot ? 4f : isRunner ? 1f : 2f;
@@ -2073,7 +2275,67 @@ namespace gamething
                     e.Graphics.DrawRectangle(borderPen, enemyBarX, enemyBarY, enemyBarW, enemyBarH);
                 }
 
+                // Effect indicators
+                if (i < enemyIsArmored.Count && enemyIsArmored[i] && !enemyArmorBroken[i])
+                {
+                    e.Graphics.DrawEllipse(new Pen(Color.Silver, 3),
+                        enemies[i].x - 3, enemies[i].y - 3, eSize + 6, eSize + 6);
+                }
+                if (i < enemyIsCharging.Count && enemyIsCharging[i] && i < enemyIsCharging_Active.Count && enemyIsCharging_Active[i])
+                {
+                    e.Graphics.DrawEllipse(new Pen(Color.Yellow, 2),
+                        enemies[i].x - 3, enemies[i].y - 3, eSize + 6, eSize + 6);
+                }
+                if (i < enemyIsReflective.Count && enemyIsReflective[i])
+                {
+                    e.Graphics.DrawEllipse(new Pen(Color.FromArgb(100, 200, 200, 255), 2),
+                        enemies[i].x - 2, enemies[i].y - 2, eSize + 4, eSize + 4);
+                }
+                if (i < enemyIsBerserker.Count && enemyIsBerserker[i])
+                {
+                    float maxHpDraw = isTank ? 8f : canShoot ? 4f : isRunner ? 1f : 2f;
+                    if (i < enemyHealth.Count && enemyHealth[i] < maxHpDraw * 0.5f)
+                    {
+                        float pulse = (float)Math.Abs(Math.Sin(gameStartTimer * 8f));
+                        e.Graphics.DrawEllipse(new Pen(Color.FromArgb((int)(pulse * 255), 255, 50, 0), 2),
+                            enemies[i].x - 3, enemies[i].y - 3, eSize + 6, eSize + 6);
+                    }
+                }
+                if (i < enemyIsRegenerating.Count && enemyIsRegenerating[i])
+                {
+                    e.Graphics.DrawEllipse(new Pen(Color.FromArgb(80, 0, 255, 100), 1),
+                        enemies[i].x - 2, enemies[i].y - 2, eSize + 4, eSize + 4);
+                }
+                if (i < enemyIsCorrupted.Count && enemyIsCorrupted[i])
+                {
+                    float pulse2 = (float)Math.Abs(Math.Sin(gameStartTimer * 4f));
+                    e.Graphics.DrawEllipse(new Pen(Color.FromArgb((int)(pulse2 * 180), 80, 0, 150), 2),
+                        enemies[i].x - 3, enemies[i].y - 3, eSize + 6, eSize + 6);
+                }
+                if (i < enemyIsZigzag.Count && enemyIsZigzag[i])
+                {
+                    e.Graphics.DrawEllipse(new Pen(Color.FromArgb(120, Color.Cyan), 1),
+                        enemies[i].x - 2, enemies[i].y - 2, eSize + 4, eSize + 4);
+                }
+                if (i < enemyIsFrenzied.Count && enemyIsFrenzied[i])
+                {
+                    float pulse3 = (float)Math.Abs(Math.Sin(gameStartTimer * 12f));
+                    e.Graphics.DrawEllipse(new Pen(Color.FromArgb((int)(pulse3 * 200), Color.Orange), 1),
+                        enemies[i].x - 2, enemies[i].y - 2, eSize + 4, eSize + 4);
+                }
             }
+
+            // Corrupted trails
+            foreach (var t in corruptedTrails)
+            {
+                float alpha = t.timer / 2f;
+                int a = (int)(alpha * 150);
+                int tSize = (int)(boxSize * 0.6f);
+                e.Graphics.FillEllipse(
+                    new SolidBrush(Color.FromArgb(a, 80, 0, 150)),
+                    t.x - tSize / 2, t.y - tSize / 2, tSize, tSize);
+            }
+
             if (enemyInspectTimer > 0 && inspectedEnemyIndex >= 0 &&
     inspectedEnemyIndex < enemies.Count && enemyAlive[inspectedEnemyIndex])
             {
@@ -2663,7 +2925,6 @@ namespace gamething
             deathFlashes.Clear();
             hitFlashes.Clear();
             parasites.Clear();
-            parasiticEnemyChance = 0.05f;
             parasiteDecayKill = false;
             ricochetExplosion = false;
             bloodMoney = false;
@@ -2672,6 +2933,9 @@ namespace gamething
             unlockParticles.Clear();
             unlockAnimTimer = 0f;
             pendingUnlockAnimation = -1;
+            shootRate = 10f / 60f;
+            currentBossMaxHealth = 100f;
+            currentBossShootRate = 2f;
         }
 
         private void ResetEnemies()
@@ -2695,6 +2959,29 @@ namespace gamething
             enemyIsParasitic = enemies.Select(_ => new Random().NextDouble() < parasiticEnemyChance).ToList();
             parasites = new List<(float x, float y, float velX, float velY, float timer, float spawnDelay, float hitCooldown)>();
             parasites.Clear();
+            enemyIsFrenzied = new List<bool>(new bool[enemies.Count]);
+            enemyIsPhasing = new List<bool>(new bool[enemies.Count]);
+            enemyIsZigzag = new List<bool>(new bool[enemies.Count]);
+            enemyIsCharging = new List<bool>(new bool[enemies.Count]);
+            enemyIsArmored = new List<bool>(new bool[enemies.Count]);
+            enemyIsRegenerating = new List<bool>(new bool[enemies.Count]);
+            enemyIsReflective = new List<bool>(new bool[enemies.Count]);
+            enemyIsBerserker = new List<bool>(new bool[enemies.Count]);
+            enemyIsCorrupted = new List<bool>(new bool[enemies.Count]);
+            enemyArmorBroken = new List<bool>(new bool[enemies.Count]);
+            enemyChargeCooldown = new List<float>(new float[enemies.Count]);
+            enemyChargeTimer = new List<float>(new float[enemies.Count]);
+            enemyIsCharging_Active = new List<bool>(new bool[enemies.Count]);
+            enemyChargeVelX = new List<float>(new float[enemies.Count]);
+            enemyChargeVelY = new List<float>(new float[enemies.Count]);
+            enemyFrenziedAngle = new List<float>(new float[enemies.Count]);
+            enemyZigzagTimer = new List<float>(new float[enemies.Count]);
+            enemyZigzagDirection = Enumerable.Repeat(1f, enemies.Count).ToList();
+            enemyPhasingTimer = new List<float>(new float[enemies.Count]);
+            enemyIsVisible = Enumerable.Repeat(true, enemies.Count).ToList();
+
+            for (int i = 0; i < enemies.Count; i++)
+                InitEnemyEffects(i);
             SyncEnemyLists();
             enemyHealth = enemies.Select((_, idx) =>
             {
@@ -2843,7 +3130,7 @@ namespace gamething
                 new { Title = "Tank",            Icon = "🛡", Description = "+10 Max HP",                        Cost = 450,  Stack = "Stacks", Category = "Defensive" },
                 new { Title = "Time Travel",     Icon = "⏭️", Description = "-0.05 time refresh",               Cost = 470,  Stack = "Stacks", Category = "Cooldown"   },
                 new { Title = "Thruster",        Icon = "🚀", Description = "+1 Bullet Speed",                   Cost = 500,  Stack = "Stacks", Category = "Offensive" },
-                new { Title = "Time is Money",   Icon = "★",  Description = "+1 score per time refresh",         Cost = 510,  Stack = "Stacks", Category = "Economy"   },
+                new { Title = "Time is Money",   Icon = "★",  Description = "+1 score per money refresh",         Cost = 510,  Stack = "Stacks", Category = "Economy"   },
                 new { Title = "Bigger Player",   Icon = "⬛", Description = "Bigger player, bullet, and steps",  Cost = 600,  Stack = "Stacks", Category = "Defensive" },
                 new { Title = "Stronger Decoy",  Icon = "🧥", Description = "+1s decoy time",                    Cost = 610,  Stack = "Stacks", Category = "Cooldown"  },
                 new { Title = "Minigun Trait",   Icon = "⚡", Description = "Fire rate +0.1",                    Cost = 650,  Stack = "Stacks", Category = "Offensive" },
@@ -3483,6 +3770,34 @@ namespace gamething
         {
             if (i < 0 || i >= enemies.Count || i >= enemyHealth.Count || i >= enemyAlive.Count) return;
             if (!enemyAlive[i]) return;
+
+            // Armor check
+            if (i < enemyIsArmored.Count && enemyIsArmored[i] && !enemyArmorBroken[i])
+            {
+                enemyArmorBroken[i] = true;
+                hitFlashes.Add((enemies[i].x + boxSize / 2, enemies[i].y + boxSize / 2, 0.2f, 0.2f, boxSize));
+                return;
+            }
+
+            // Reflective - chance to reflect
+            if (i < enemyIsReflective.Count && enemyIsReflective[i])
+            {
+                if (new Random().NextDouble() < 0.2f)
+                {
+                    health -= damage * 0.5f;
+                    hitFlashes.Add((enemies[i].x + boxSize / 2, enemies[i].y + boxSize / 2, 0.1f, 0.1f, boxSize));
+                    return;
+                }
+            }
+
+            // Berserker - half damage when below 50%
+            bool isBerserkerEnemy = i < enemyIsBerserker.Count && enemyIsBerserker[i];
+            float maxHpB = i < enemyIsTank.Count && enemyIsTank[i] ? 8f :
+                           i < enemyCanShoot.Count && enemyCanShoot[i] ? 4f :
+                           i < enemyIsRunner.Count && enemyIsRunner[i] ? 1f : 2f;
+            if (isBerserkerEnemy && enemyHealth[i] < maxHpB * 0.5f)
+                damage *= 0.5f; // Takes less damage when berserk
+
             enemyHealth[i] -= damage;
             int hFlashSize = i < enemyIsTank.Count && enemyIsTank[i] ? boxSize + 20 :
                  i < enemyCanShoot.Count && enemyCanShoot[i] ? boxSize + 8 :
@@ -3918,16 +4233,18 @@ namespace gamething
                     currentEnemySpeed = 3f * scale;
                     enemyDamage = 0.5f;
                     bossSpawnInterval_Current = 180f;
-                    bossMaxHealth = 250;
+                    currentBossMaxHealth = 150f;
+                    currentBossShootRate = 2.5f;
                     scoreMultiplier = 3f;
-                    parasiticEnemyChance = 0.0f;
+                    parasiticEnemyChance = 0f;
                     break;
                 case 1: // Normal
                     currentEnemySpeed = 5f * scale;
                     enemyDamage = 1f;
                     bossSpawnInterval_Current = 120f;
                     scoreMultiplier = 1f;
-                    bossMaxHealth = 300;
+                    currentBossMaxHealth = 300f;
+                    currentBossShootRate = 2f;
                     parasiticEnemyChance = 0.01f;
                     break;
                 case 2: // Hard
@@ -3935,7 +4252,8 @@ namespace gamething
                     enemyDamage = 1.5f;
                     bossSpawnInterval_Current = 90f;
                     scoreMultiplier = 2f;
-                    bossMaxHealth = 350;
+                    currentBossMaxHealth = 400f;
+                    currentBossShootRate = 1.8f;
                     parasiticEnemyChance = 0.05f;
                     break;
                 case 3: // Nightmare
@@ -3943,7 +4261,8 @@ namespace gamething
                     enemyDamage = 2f;
                     bossSpawnInterval_Current = 60f;
                     scoreMultiplier = 2f;
-                    bossMaxHealth = 400;
+                    currentBossMaxHealth = 500f;
+                    currentBossShootRate = 1.5f;
                     parasiticEnemyChance = 0.1f;
                     break;
             }
@@ -3974,8 +4293,28 @@ namespace gamething
             difficultyUnlocked_Hard = saveData.Contains("PHANTOM");
             difficultyUnlocked_Nightmare = saveData.Contains("OBLIVION");
         }
+        private Button? pauseResumeBtn = null;
         private void ShowPauseButtons()
         {
+            pauseResumeBtn = new Button();
+            pauseResumeBtn.Text = "▶ Resume";
+            pauseResumeBtn.Size = new Size(200, 45);
+            pauseResumeBtn.Location = new Point(ClientSize.Width / 2 - 100, ClientSize.Height / 2 + 10);
+            pauseResumeBtn.BackColor = Color.FromArgb(40, 100, 40);
+            pauseResumeBtn.ForeColor = Color.White;
+            pauseResumeBtn.FlatStyle = FlatStyle.Flat;
+            pauseResumeBtn.FlatAppearance.BorderColor = Color.FromArgb(60, 140, 60);
+            pauseResumeBtn.Font = new Font("Arial", 12, FontStyle.Bold);
+            pauseResumeBtn.Cursor = Cursors.Hand;
+            pauseResumeBtn.MouseEnter += (s, e) => { if (pauseResumeBtn != null) pauseResumeBtn.BackColor = Color.FromArgb(50, 130, 50); };
+            pauseResumeBtn.MouseLeave += (s, e) => { if (pauseResumeBtn != null) pauseResumeBtn.BackColor = Color.FromArgb(40, 100, 40); };
+            pauseResumeBtn.Click += (s, e) =>
+            {
+                HidePauseButtons();
+                isPaused = false;
+            };
+
+
             pauseQuitBtn = new Button();
             pauseQuitBtn.Text = "✕ Quit to Menu";
             pauseQuitBtn.Size = new Size(200, 45);
@@ -3995,12 +4334,19 @@ namespace gamething
                 ResetGame();
                 ShowMainMenu();
             };
+            this.Controls.Add(pauseResumeBtn);
             this.Controls.Add(pauseQuitBtn);
+            pauseResumeBtn.BringToFront();
             pauseQuitBtn.BringToFront();
         }
 
         private void HidePauseButtons()
         {
+            if (pauseResumeBtn != null)
+            {
+                this.Controls.Remove(pauseResumeBtn);
+                pauseResumeBtn = null;
+            }
             if (pauseQuitBtn != null)
             {
                 this.Controls.Remove(pauseQuitBtn);
@@ -4047,6 +4393,77 @@ namespace gamething
             while (enemyShootTimers.Count < enemies.Count) enemyShootTimers.Add(0f);
             while (enemyFlameTimers.Count < enemies.Count) enemyFlameTimers.Add(0f);
             while (enemyHealth.Count < enemies.Count) enemyHealth.Add(2f);
+            while (enemyIsFrenzied.Count < enemies.Count) { enemyIsFrenzied.Add(false); }
+            while (enemyIsPhasing.Count < enemies.Count) { enemyIsPhasing.Add(false); }
+            while (enemyIsZigzag.Count < enemies.Count) { enemyIsZigzag.Add(false); }
+            while (enemyIsCharging.Count < enemies.Count) { enemyIsCharging.Add(false); }
+            while (enemyIsArmored.Count < enemies.Count) { enemyIsArmored.Add(false); }
+            while (enemyIsRegenerating.Count < enemies.Count) { enemyIsRegenerating.Add(false); }
+            while (enemyIsReflective.Count < enemies.Count) { enemyIsReflective.Add(false); }
+            while (enemyIsBerserker.Count < enemies.Count) { enemyIsBerserker.Add(false); }
+            while (enemyIsCorrupted.Count < enemies.Count) { enemyIsCorrupted.Add(false); }
+            while (enemyArmorBroken.Count < enemies.Count) { enemyArmorBroken.Add(false); }
+            while (enemyChargeCooldown.Count < enemies.Count) { enemyChargeCooldown.Add(3f); }
+            while (enemyChargeTimer.Count < enemies.Count) { enemyChargeTimer.Add(0f); }
+            while (enemyIsCharging_Active.Count < enemies.Count) { enemyIsCharging_Active.Add(false); }
+            while (enemyChargeVelX.Count < enemies.Count) { enemyChargeVelX.Add(0f); }
+            while (enemyChargeVelY.Count < enemies.Count) { enemyChargeVelY.Add(0f); }
+            while (enemyFrenziedAngle.Count < enemies.Count) { enemyFrenziedAngle.Add(0f); }
+            while (enemyZigzagTimer.Count < enemies.Count) { enemyZigzagTimer.Add(0f); }
+            while (enemyZigzagDirection.Count < enemies.Count) { enemyZigzagDirection.Add(1f); }
+            while (enemyPhasingTimer.Count < enemies.Count) { enemyPhasingTimer.Add(0f); }
+            while (enemyIsVisible.Count < enemies.Count) { enemyIsVisible.Add(true); }
         }
+        private bool RollEffect(int minDifficulty)
+        {
+            if (difficulty < minDifficulty) return false;
+            float chance = difficulty == 1 ? effectChance_Normal :
+                           difficulty == 2 ? effectChance_Hard :
+                           difficulty == 3 ? effectChance_Nightmare : 0f;
+            return new Random().NextDouble() < chance;
+        }
+        private void InitEnemyEffects(int i)
+        {
+            while (enemyIsFrenzied.Count <= i) enemyIsFrenzied.Add(false);
+            while (enemyIsPhasing.Count <= i) enemyIsPhasing.Add(false);
+            while (enemyIsZigzag.Count <= i) enemyIsZigzag.Add(false);
+            while (enemyIsCharging.Count <= i) enemyIsCharging.Add(false);
+            while (enemyIsArmored.Count <= i) enemyIsArmored.Add(false);
+            while (enemyIsRegenerating.Count <= i) enemyIsRegenerating.Add(false);
+            while (enemyIsReflective.Count <= i) enemyIsReflective.Add(false);
+            while (enemyIsBerserker.Count <= i) enemyIsBerserker.Add(false);
+            while (enemyIsCorrupted.Count <= i) enemyIsCorrupted.Add(false);
+            while (enemyArmorBroken.Count <= i) enemyArmorBroken.Add(false);
+            while (enemyChargeCooldown.Count <= i) enemyChargeCooldown.Add(0f);
+            while (enemyChargeTimer.Count <= i) enemyChargeTimer.Add(0f);
+            while (enemyIsCharging_Active.Count <= i) enemyIsCharging_Active.Add(false);
+            while (enemyChargeVelX.Count <= i) enemyChargeVelX.Add(0f);
+            while (enemyChargeVelY.Count <= i) enemyChargeVelY.Add(0f);
+            while (enemyFrenziedAngle.Count <= i) enemyFrenziedAngle.Add(0f);
+            while (enemyZigzagTimer.Count <= i) enemyZigzagTimer.Add(0f);
+            while (enemyZigzagDirection.Count <= i) enemyZigzagDirection.Add(1f);
+            while (enemyPhasingTimer.Count <= i) enemyPhasingTimer.Add(0f);
+            while (enemyIsVisible.Count <= i) enemyIsVisible.Add(true);
+
+            enemyIsFrenzied[i] = RollEffect(1);
+            enemyIsZigzag[i] = !enemyIsFrenzied[i] && RollEffect(2);
+            enemyIsCharging[i] = !enemyIsFrenzied[i] && !enemyIsZigzag[i] && RollEffect(1);
+            enemyIsArmored[i] = RollEffect(2);
+            enemyIsRegenerating[i] = RollEffect(2);
+            enemyIsReflective[i] = RollEffect(3);
+            enemyIsBerserker[i] = RollEffect(1);
+            enemyIsPhasing[i] = RollEffect(3);
+            enemyIsCorrupted[i] = RollEffect(3);
+            enemyArmorBroken[i] = false;
+            enemyChargeCooldown[i] = 3f;
+            enemyChargeTimer[i] = 0f;
+            enemyIsCharging_Active[i] = false;
+            enemyFrenziedAngle[i] = (float)(new Random().NextDouble() * Math.PI * 2);
+            enemyZigzagTimer[i] = 0f;
+            enemyZigzagDirection[i] = 1f;
+            enemyPhasingTimer[i] = 0f;
+            enemyIsVisible[i] = true;
+        }
+
     }
 }

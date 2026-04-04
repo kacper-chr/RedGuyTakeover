@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Zombie")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.1.1.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.1.1+4be992864328e81fd9ca8203c333ff972b71bd2a")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.1.1+2c4164844e386874b7676fcfa5722c100106cafd")]
 [assembly: System.Reflection.AssemblyProductAttribute("Red Guy Takeover")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Red Guy Takeover")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.1.1.0")]
