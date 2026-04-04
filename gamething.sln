@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.37027.9
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Red Guy Takeover", "gamething\Red Guy Takeover.csproj", "{2FDE50D7-A0AD-4809-96A8-762CBD7594C9}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2FDE50D7-A0AD-4809-96A8-762CBD7594C9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2FDE50D7-A0AD-4809-96A8-762CBD7594C9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2FDE50D7-A0AD-4809-96A8-762CBD7594C9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2FDE50D7-A0AD-4809-96A8-762CBD7594C9}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {E2E898D9-593D-41AA-9DCB-A8F3511CEEA6}
+	EndGlobalSection
+EndGlobal

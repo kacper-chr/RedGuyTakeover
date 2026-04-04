@@ -1,0 +1,19 @@
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\gamething.Form1.resources
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\gamething.csproj.GenerateResource.cache
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\gamething.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\gamething.AssemblyInfoInputs.cache
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\gamething.AssemblyInfo.cs
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\gamething.csproj.CoreCompileInputs.cache
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\gamething.genruntimeconfig.cache
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\bin\Debug\net8.0-windows\Run Away Game.exe
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\bin\Debug\net8.0-windows\Run Away Game.deps.json
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\bin\Debug\net8.0-windows\Run Away Game.runtimeconfig.json
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\bin\Debug\net8.0-windows\Run Away Game.dll
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\bin\Debug\net8.0-windows\Run Away Game.pdb
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\Run Away Game.dll
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\refint\Run Away Game.dll
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\Run Away Game.pdb
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\ref\Run Away Game.dll
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\bin\Debug\net8.0-windows\System.Security.Cryptography.ProtectedData.dll
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\gamething.csproj.AssemblyReference.cache
+C:\Users\chrob_d1lzk\source\repos\gamething\gamething\obj\Debug\net8.0-windows\gamething.csproj.Up2Date
