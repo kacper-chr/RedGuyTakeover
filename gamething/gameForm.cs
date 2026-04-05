@@ -4365,12 +4365,18 @@ namespace gamething
                     break;
             }
         }
+        private static string GetSaveDir()
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RedGuyTakeover");
+            Directory.CreateDirectory(dir);
+            return dir;
+        }
+
         private string GetSavePath()
         {
-            return Path.Combine(
-                AppDomain.CurrentDomain.BaseDirectory,
-                "saves.dat"
-            );
+            return Path.Combine(GetSaveDir(), "saves.dat");
         }
 
         private void SaveDifficultyUnlocks()
@@ -4569,7 +4575,7 @@ namespace gamething
             {
                 var lines = runHistory.Select(r =>
                     $"{r.score}|{r.kills}|{r.time}|{r.difficulty}|{r.sandbox}");
-                File.WriteAllLines(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "history.dat"),
+                File.WriteAllLines(Path.Combine(GetSaveDir(), "history.dat"),
                     lines);
             }
             catch { }
@@ -4579,7 +4585,7 @@ namespace gamething
         {
             try
             {
-                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "history.dat");
+                string path = Path.Combine(GetSaveDir(), "history.dat");
                 if (!File.Exists(path)) return;
                 runHistory.Clear();
                 foreach (var line in File.ReadAllLines(path))
@@ -4598,7 +4604,7 @@ namespace gamething
             try
             {
                 var lines = beastiaryKills.Select(kv => $"{kv.Key}|{kv.Value}");
-                File.WriteAllLines(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bestiary.dat"),
+                File.WriteAllLines(Path.Combine(GetSaveDir(), "bestiary.dat"),
                     lines);
             }
             catch { }
@@ -4608,7 +4614,7 @@ namespace gamething
         {
             try
             {
-                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bestiary.dat");
+                string path = Path.Combine(GetSaveDir(), "bestiary.dat");
                 if (!File.Exists(path)) return;
                 foreach (var line in File.ReadAllLines(path))
                 {
@@ -4626,7 +4632,7 @@ namespace gamething
             try
             {
                 File.WriteAllLines(
-                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "achievements.dat"),
+                    Path.Combine(GetSaveDir(), "achievements.dat"),
                     unlockedAchievements);
             }
             catch { }
@@ -4636,7 +4642,7 @@ namespace gamething
         {
             try
             {
-                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "achievements.dat");
+                string path = Path.Combine(GetSaveDir(), "achievements.dat");
                 if (!File.Exists(path)) return;
                 foreach (var line in File.ReadAllLines(path))
                 {
