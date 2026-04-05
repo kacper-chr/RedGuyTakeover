@@ -574,13 +574,10 @@ namespace gamething
                     break;
                 case Keys.Escape:
                     isPaused = !isPaused;
-                    if (!isMultiplayer)
-                    {
-                        if (isPaused)
-                            ShowPauseButtons();
-                        else
-                            HidePauseButtons();
-                    }
+                    if (isPaused)
+                        ShowPauseButtons();
+                    else
+                        HidePauseButtons();
                     break;
                 case Keys.Q:
                     if (isMultiplayer && !isNetHost)
@@ -1194,7 +1191,7 @@ namespace gamething
                         bool isTank2 = i < enemyIsTank.Count && enemyIsTank[i];
                         float dmg2 = isTank2 ? enemyDamage * 3f : enemyDamage;
                         p2Health -= dmg2 * deltaTime * 2f;
-                        if (p2Health <= 0) { p2Health = 0; p2Dead = true; if (hostDead) HandleMultiplayerGameOver(); }
+                        if (p2Health <= 0) { p2Health = 0; p2Dead = true; }
                     }
                     if (i < enemyCanShoot.Count && enemyCanShoot[i])
                     {
@@ -4021,21 +4018,21 @@ namespace gamething
 
         private void HandlePlayerDeath()
         {
-            // In multiplayer, mark this player as dead but keep the game going
             if (isMultiplayer)
             {
                 health = 0;
                 if (isNetHost)
                 {
+                    // Host dying ends the match for everyone
                     hostDead = true;
-                    // If both dead, end the game for real
-                    if (p2Dead)
-                        HandleMultiplayerGameOver();
+                    HandleMultiplayerGameOver();
                 }
                 else
                 {
-                    // Client dies — just mark dead, host will see via packet
-                    // Game over handled when host sends both-dead state
+                    // Client dying — mark dead, game continues if host is alive
+                    hostDead = true; // "hostDead" on client = "I am dead"
+                    if (p2Dead)
+                        HandleMultiplayerGameOver(); // both dead
                 }
                 return;
             }
@@ -4685,6 +4682,14 @@ namespace gamething
             {
                 HidePauseButtons();
                 isPaused = false;
+                if (isMultiplayer)
+                {
+                    isMultiplayer = false;
+                    hostDead = false;
+                    p2Dead = false;
+                    if (netManager != null) { netManager.Disconnect(); netManager = null; }
+                    if (embeddedRelay != null) { embeddedRelay.Stop(); embeddedRelay = null; }
+                }
                 int savedUnlock = pendingUnlockAnimation;
                 ResetGame();
                 pendingUnlockAnimation = savedUnlock;
@@ -5489,15 +5494,11 @@ namespace gamething
                     newEB.Add((state.EnemyBulletX[i] * sw, state.EnemyBulletY[i] * sh, 0, 0));
                 enemyBullets = newEB;
 
-                // Handle death states
-                if (state.ClientDead && health <= 0)
+                // Handle death states — host dying ends the match
+                if (state.HostDead)
                 {
-                    // I (client) am dead — don't process movement/shooting
-                }
-                if (state.HostDead && state.ClientDead)
-                {
-                    // Both dead — trigger game over on client
-                    HandlePlayerDeath();
+                    // Host died — game over for everyone
+                    HandleMultiplayerGameOver();
                 }
             }
             catch { /* state packet race condition, skip frame */ }
