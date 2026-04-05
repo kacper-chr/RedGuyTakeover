@@ -407,6 +407,11 @@ namespace gamething
         private float p2Health = 50f, p2MaxHealth = 50f;
         private bool p2Dashing = false;
         private string p2Name = "Player 2";
+        private bool p2Dead = false;
+        private bool hostDead = false;
+        private int p2PendingUpgrade = -1; // client sends upgrade purchase to host
+        private bool p2PendingSuper = false; // client wants to activate super
+        private bool p2PendingWall = false; // client wants to activate wall
 
         // Client-side: latest game state from host
         private GameStatePacket? latestGameState = null;
@@ -574,7 +579,11 @@ namespace gamething
                         HidePauseButtons();
                     break;
                 case Keys.Q:
-                    if (!superActive && superCooldown <= 0)
+                    if (isMultiplayer && !isNetHost)
+                    {
+                        p2PendingSuper = true; // send to host
+                    }
+                    else if (!superActive && superCooldown <= 0)
                     {
                         superActive = true;
                         superTimer = superDuration;
@@ -583,7 +592,11 @@ namespace gamething
                     }
                     break;
                 case Keys.E:
-                    if (!wallActive && wallCooldown <= 0)
+                    if (isMultiplayer && !isNetHost)
+                    {
+                        p2PendingWall = true; // send to host
+                    }
+                    else if (!wallActive && wallCooldown <= 0)
                     {
                         wallActive = true;
                         wallTimer = wallDuration;
@@ -824,6 +837,8 @@ namespace gamething
                     }
                 }
             }
+            // Skip movement/shooting if dead in multiplayer
+            if (hostDead) { velocityX = 0; velocityY = 0; }
             float toughLoveBonus = toughLove ? 1f + (1f - (health / maxHealth)) * 1.5f : 1f;
             float currentSpeed = isAfterburn ? afterburnSpeed : 1f;
             posX += velocityX * deltaTime * 60 * currentSpeed * toughLoveBonus;
@@ -909,7 +924,7 @@ namespace gamething
             }
             if (!isDashing)
                 (posX, posY) = PushOutOfWalls(posX, posY, boxSize);
-            if (mouseHeld && gameStartTimer > gameStartDelay && !reloading)
+            if (mouseHeld && gameStartTimer > gameStartDelay && !reloading && !hostDead)
             {
                 if (shootCooldown <= 0 && (ammo > 0 || superActive))
                 {
@@ -977,8 +992,16 @@ namespace gamething
             // Boss movement and logic
             if (bossAlive)
             {
-                float bDirX = posX - bossX;
-                float bDirY = posY - bossY;
+                // Boss targets nearest player
+                float bossTgtX = posX, bossTgtY = posY;
+                if (isMultiplayer && !p2Dead)
+                {
+                    float bd1 = hostDead ? float.MaxValue : (posX - bossX) * (posX - bossX) + (posY - bossY) * (posY - bossY);
+                    float bd2 = (p2X - bossX) * (p2X - bossX) + (p2Y - bossY) * (p2Y - bossY);
+                    if (bd2 < bd1) { bossTgtX = p2X; bossTgtY = p2Y; }
+                }
+                float bDirX = bossTgtX - bossX;
+                float bDirY = bossTgtY - bossY;
                 float bDist = (float)Math.Sqrt(bDirX * bDirX + bDirY * bDirY);
                 superCooldown = superCooldownTime;
                 if (bDist > 0)
@@ -1006,8 +1029,18 @@ namespace gamething
                 if (bossShootTimer >= currentBossShootRate)
                 {
                     bossShootTimer = 0f;
-                    float targetX = decoyActive ? decoyX : posX + playerSize / 2;
-                    float targetY = decoyActive ? decoyY : posY + playerSize / 2;
+                    float targetX, targetY;
+                    if (decoyActive) { targetX = decoyX; targetY = decoyY; }
+                    else
+                    {
+                        targetX = posX + playerSize / 2; targetY = posY + playerSize / 2;
+                        if (isMultiplayer && !p2Dead)
+                        {
+                            float bsd1 = hostDead ? float.MaxValue : (targetX - bossX) * (targetX - bossX) + (targetY - bossY) * (targetY - bossY);
+                            float bsd2 = (p2X + playerSize / 2 - bossX) * (p2X + playerSize / 2 - bossX) + (p2Y + playerSize / 2 - bossY) * (p2Y + playerSize / 2 - bossY);
+                            if (bsd2 < bsd1) { targetX = p2X + playerSize / 2; targetY = p2Y + playerSize / 2; }
+                        }
+                    }
                     float bsDirX = targetX - (bossX + bossSize * scale / 2);
                     float bsDirY = targetY - (bossY + bossSize * scale / 2);
                     float bsDist = (float)Math.Sqrt(bsDirX * bsDirX + bsDirY * bsDirY);
@@ -1073,8 +1106,17 @@ namespace gamething
                     }
                     else
                     {
-                        dirX = (posX - (playerSize / 2)) - enemies[i].x;
-                        dirY = (posY - (playerSize / 2)) - enemies[i].y;
+                        // In multiplayer, target nearest living player
+                        float tX = posX + playerSize / 2;
+                        float tY = posY + playerSize / 2;
+                        if (isMultiplayer && !p2Dead)
+                        {
+                            float d1 = hostDead ? float.MaxValue : (posX + playerSize / 2 - enemies[i].x) * (posX + playerSize / 2 - enemies[i].x) + (posY + playerSize / 2 - enemies[i].y) * (posY + playerSize / 2 - enemies[i].y);
+                            float d2 = (p2X + playerSize / 2 - enemies[i].x) * (p2X + playerSize / 2 - enemies[i].x) + (p2Y + playerSize / 2 - enemies[i].y) * (p2Y + playerSize / 2 - enemies[i].y);
+                            if (d2 < d1) { tX = p2X + playerSize / 2; tY = p2Y + playerSize / 2; }
+                        }
+                        dirX = tX - enemies[i].x;
+                        dirY = tY - enemies[i].y;
                     }
                     float dist = (float)Math.Sqrt(dirX * dirX + dirY * dirY);
                     if (dist > 0)
@@ -1109,7 +1151,7 @@ namespace gamething
                         }
                     }
                     bool isPhased = i < enemyIsPhasing.Count && enemyIsPhasing[i] && !enemyIsVisible[i];
-                    if (!isDashing && enemies[i].x < posX + playerSize && enemies[i].x + boxSize > posX &&
+                    if (!hostDead && !isDashing && enemies[i].x < posX + playerSize && enemies[i].x + boxSize > posX &&
                         enemies[i].y < posY + playerSize && enemies[i].y + boxSize > posY)
                     {
                         if (hitCooldown <= 0)
@@ -1139,14 +1181,14 @@ namespace gamething
                         }
                     }
                     // P2 enemy collision (multiplayer host only)
-                    if (isMultiplayer && isNetHost && !p2Dashing &&
+                    if (isMultiplayer && isNetHost && !p2Dead && !p2Dashing &&
                         enemies[i].x < p2X + playerSize && enemies[i].x + boxSize > p2X &&
                         enemies[i].y < p2Y + playerSize && enemies[i].y + boxSize > p2Y)
                     {
                         bool isTank2 = i < enemyIsTank.Count && enemyIsTank[i];
                         float dmg2 = isTank2 ? enemyDamage * 3f : enemyDamage;
                         p2Health -= dmg2 * deltaTime * 2f;
-                        if (p2Health <= 0) p2Health = 0;
+                        if (p2Health <= 0) { p2Health = 0; p2Dead = true; if (hostDead) HandleMultiplayerGameOver(); }
                     }
                     if (i < enemyCanShoot.Count && enemyCanShoot[i])
                     {
@@ -1154,8 +1196,18 @@ namespace gamething
                         if (enemyShootTimers[i] >= enemyShootRate)
                         {
                             enemyShootTimers[i] = 0f;
-                            float targetX = decoyActive ? decoyX : posX + playerSize / 2;
-                            float targetY = decoyActive ? decoyY : posY + playerSize / 2;
+                            float targetX, targetY;
+                            if (decoyActive) { targetX = decoyX; targetY = decoyY; }
+                            else
+                            {
+                                targetX = posX + playerSize / 2; targetY = posY + playerSize / 2;
+                                if (isMultiplayer && !p2Dead)
+                                {
+                                    float sd1 = hostDead ? float.MaxValue : (targetX - enemies[i].x) * (targetX - enemies[i].x) + (targetY - enemies[i].y) * (targetY - enemies[i].y);
+                                    float sd2 = (p2X + playerSize / 2 - enemies[i].x) * (p2X + playerSize / 2 - enemies[i].x) + (p2Y + playerSize / 2 - enemies[i].y) * (p2Y + playerSize / 2 - enemies[i].y);
+                                    if (sd2 < sd1) { targetX = p2X + playerSize / 2; targetY = p2Y + playerSize / 2; }
+                                }
+                            }
                             float sDirX = targetX - enemies[i].x;
                             float sDirY = targetY - enemies[i].y;
                             float sDist = (float)Math.Sqrt(sDirX * sDirX + sDirY * sDirY);
@@ -1801,8 +1853,16 @@ namespace gamething
                             AimX = mousePos.X,
                             AimY = mousePos.Y,
                             Shooting = mouseHeld,
-                            Dashing = isDashing
+                            Dashing = isDashing,
+                            ActivateSuper = p2PendingSuper,
+                            ActivateWall = p2PendingWall,
+                            WallAimX = mousePos.X,
+                            WallAimY = mousePos.Y,
+                            UpgradePurchaseIndex = p2PendingUpgrade,
                         };
+                        p2PendingSuper = false;
+                        p2PendingWall = false;
+                        p2PendingUpgrade = -1;
                         netManager.SendPlayerInput(input);
 
                         if (latestGameState.HasValue)
@@ -2195,7 +2255,9 @@ namespace gamething
                     p2path.AddArc(p2X + playerSize - r2, p2Y + playerSize - r2, r2, r2, 0, 90);
                     p2path.AddArc(p2X, p2Y + playerSize - r2, r2, r2, 90, 90);
                     p2path.CloseFigure();
-                    Color p2Color = p2Dashing ? Color.FromArgb(150, 100, 200, 255) : Color.FromArgb(255, 80, 140, 255);
+                    int p2Alpha = p2Dead ? 60 : 255;
+                    Color p2Color = p2Dead ? Color.FromArgb(p2Alpha, 100, 100, 100) :
+                        p2Dashing ? Color.FromArgb(150, 100, 200, 255) : Color.FromArgb(255, 80, 140, 255);
                     e.Graphics.FillPath(new SolidBrush(p2Color), p2path);
                     e.Graphics.DrawPath(new Pen(Color.FromArgb(40, 80, 160), 2), p2path);
                 }
@@ -2927,6 +2989,8 @@ namespace gamething
             dashPower = 12 * scale; wallLength = 240f * scale;
             tankEnemyChance = 0.05f;
             boxWall = false; boxWalls.Clear();
+            hostDead = false; p2Dead = false;
+            p2PendingUpgrade = -1; p2PendingSuper = false; p2PendingWall = false;
             runnerEnemyChance = 0.05f;
             medic = false; doubleTap = false; doubleTapCounter = 0;
             explosiveFinish = false; nextBulletIsLast = false;
@@ -3516,55 +3580,15 @@ namespace gamething
                 {
                     if (score < cost) return;
                     if (capturedCard.Tag is int t && t == int.MaxValue) return;
-                    score -= cost;
-                    totalUpgradesPurchased++;
-                    if (cashback) totalSpentSinceLastCashback += cost;
-                    switch (index)
+                    // In multiplayer as client, send upgrade to host
+                    if (isMultiplayer && !isNetHost)
                     {
-                        case 0: wallLength += boxSize; wallDuration += 5; break;
-                        case 1: maxHealth += 10; health = Math.Min(health + 10, maxHealth); break;
-                        case 2: if (scoreTimerMax > 0.05) scoreTimerMax -= 0.05f; else score += 470; break;
-                        case 3: bulletSpeed++; break;
-                        case 4: scorePerSecond++; break;
-                        case 5: playerSize += 10; bulletSize += 3; speed += 0.5f; dashPower += 1; break;
-                        case 6: decoyDuration += 1; break;
-                        case 7: shootRate = Math.Max(0.05f, shootRate - 0.1f); break;
-                        case 8: dashDuration += 0.1f; break;
-                        case 9: dashCooldownTime = Math.Max(0.5f, dashCooldownTime - 0.1f); break;
-                        case 10: explosiveFinish = true; break;
-                        case 11: reloadTime = Math.Max(0.5f, reloadTime - 0.5f); break;
-                        case 12: afterburn = true; break;
-                        case 13: blinkCooldownTime = Math.Max(5f, blinkCooldownTime - 5f); break;
-                        case 14: maxAmmo += 5; ammo = Math.Min(ammo + 5, maxAmmo); break;
-                        case 15: toughLove = true; break;
-                        case 16: superCooldownTime = Math.Max(2f, superCooldownTime - 2f); break;
-                        case 17: ricochetBounces += 2; break;
-                        case 18: doubleTap = true; break;
-                        case 19: medic = true; break;
-                        case 20: jackpot = true; break;
-                        case 21: orbitCount++; break;
-                        case 22: boxWall = true; break;
-                        case 23: flameWall = true; break;
-                        case 24: coinWorth++; break;
-                        case 25: ghostDash = true; break;
-                        case 26: decoy = true; break;
-                        case 27: blink = true; break;
-                        case 28: shrapnel = true; break;
-                        case 29: lifeSteal++; break;
-                        case 30: piercingBullets = true; break;
-                        case 31: homing = true; break;
-                        case 32: speedTrap = true; break;
-                        case 33: thorns = true; break;
-                        case 34: cashback = true; break;
-                        case 35: orbitalStrike = true; break;
-                        case 36: orbitRadiusBonus += 30f; break;
-                        case 37: turret = true; break;
-                        case 38: rapidReload = true; break;
-                        case 39: explosiveOrbit = true; break;
-                        case 40: ricochetExplosion = true; break;
-                        case 41: bloodMoney = true; break;
-                        case 42: parasiteImmune = true; break;
-                        case 43: lastStand = true; break;
+                        p2PendingUpgrade = index;
+                        // Don't apply locally — host will apply and sync via GameState
+                    }
+                    else
+                    {
+                        ApplyUpgradeByIndex(index);
                     }
                     if (!isStackable)
                     {
@@ -3970,6 +3994,25 @@ namespace gamething
 
         private void HandlePlayerDeath()
         {
+            // In multiplayer, mark this player as dead but keep the game going
+            if (isMultiplayer)
+            {
+                health = 0;
+                if (isNetHost)
+                {
+                    hostDead = true;
+                    // If both dead, end the game for real
+                    if (p2Dead)
+                        HandleMultiplayerGameOver();
+                }
+                else
+                {
+                    // Client dies — just mark dead, host will see via packet
+                    // Game over handled when host sends both-dead state
+                }
+                return;
+            }
+
             parasites.Clear();
             health = 0;
             isPaused = true;
@@ -3981,6 +4024,40 @@ namespace gamething
             bool retry = ShowDeathScreen();
             lastTick = DateTime.Now;
             int savedUnlock = pendingUnlockAnimation;
+            if (retry)
+            {
+                isPaused = false;
+                ApplyDifficulty();
+                ResetGame();
+                pendingUnlockAnimation = savedUnlock;
+            }
+            else
+            {
+                ResetGame();
+                ApplyDifficulty();
+                pendingUnlockAnimation = savedUnlock;
+                ShowMainMenu();
+            }
+        }
+
+        private void HandleMultiplayerGameOver()
+        {
+            parasites.Clear();
+            health = 0;
+            isPaused = true;
+            ResetEnemies();
+            enemySpawnTimer = 0f;
+            runHistory.Insert(0, (totalScore, totalKills, timeAlive, difficulty, sandboxMode));
+            if (runHistory.Count > maxRunHistory) runHistory.RemoveAt(runHistory.Count - 1);
+            SaveRunHistory();
+            bool retry = ShowDeathScreen();
+            lastTick = DateTime.Now;
+            int savedUnlock = pendingUnlockAnimation;
+            isMultiplayer = false;
+            hostDead = false;
+            p2Dead = false;
+            if (netManager != null) { netManager.Disconnect(); netManager = null; }
+            if (embeddedRelay != null) { embeddedRelay.Stop(); embeddedRelay = null; }
             if (retry)
             {
                 isPaused = false;
@@ -4786,7 +4863,7 @@ namespace gamething
             title.Location = new Point(20, 15);
             histForm.Controls.Add(title);
 
-            string[] diffNames = { "Easy", "Normal", "Hard", "Nightmare" };
+            string[] diffNames = { "Tutorial", "Normal", "Hard", "Nightmare" };
             Color[] diffColors = { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
 
             if (runHistory.Count == 0)
@@ -4911,7 +4988,7 @@ namespace gamething
         new { Name = "Corrupted",   Icon = "🟪", Color = Color.MediumPurple,MinDiff = 3, Desc = "Leaves a damaging purple trail behind it.",                                  Effect = "Leaves damage trail" },
     };
 
-            string[] diffNames = { "Easy", "Normal", "Hard", "Nightmare" };
+            string[] diffNames = { "Tutorial", "Normal", "Hard", "Nightmare" };
             Color[] diffColors = { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
 
             Panel scrollPanel = new Panel();
@@ -5152,10 +5229,53 @@ namespace gamething
                 BossActive = bossAlive,
                 BossX = bossX, BossY = bossY,
                 BossHealth = bossHealth, BossMaxHealth = bossMaxHealth,
+
+                SuperActive = superActive,
+                SuperTimer = superTimer,
+                SuperCooldown = superCooldown,
+                WallActive = wallActive,
+                WallTimer = wallTimer,
+                BoxWall = boxWall,
+
+                HostDead = hostDead,
+                ClientDead = p2Dead,
             };
 
             try
             {
+                // Pack wall data
+                if (wallActive)
+                {
+                    if (boxWall && boxWalls.Count > 0)
+                    {
+                        int wCount = Math.Min(boxWalls.Count, 4);
+                        pkt.WallCount = wCount;
+                        pkt.WallX = new float[wCount]; pkt.WallY = new float[wCount];
+                        pkt.WallWidth = new float[wCount]; pkt.WallHeight = new float[wCount];
+                        pkt.WallAngle = new float[wCount];
+                        for (int i = 0; i < wCount; i++)
+                        {
+                            pkt.WallX[i] = boxWalls[i].x; pkt.WallY[i] = boxWalls[i].y;
+                            pkt.WallWidth[i] = boxWalls[i].width; pkt.WallHeight[i] = boxWalls[i].height;
+                            pkt.WallAngle[i] = boxWalls[i].angle;
+                        }
+                    }
+                    else
+                    {
+                        pkt.WallCount = 1;
+                        pkt.WallX = new float[] { tempWall.x }; pkt.WallY = new float[] { tempWall.y };
+                        pkt.WallWidth = new float[] { tempWall.width }; pkt.WallHeight = new float[] { tempWall.height };
+                        pkt.WallAngle = new float[] { tempWall.angle };
+                    }
+                }
+                else
+                {
+                    pkt.WallCount = 0;
+                    pkt.WallX = Array.Empty<float>(); pkt.WallY = Array.Empty<float>();
+                    pkt.WallWidth = Array.Empty<float>(); pkt.WallHeight = Array.Empty<float>();
+                    pkt.WallAngle = Array.Empty<float>();
+                }
+
                 int eCount = Math.Min(enemies.Count, 100);
                 pkt.EnemyCount = eCount;
                 pkt.EnemyX = new float[eCount];
@@ -5190,6 +5310,16 @@ namespace gamething
                     pkt.CoinX[i] = coins[i].x;
                     pkt.CoinY[i] = coins[i].y;
                 }
+
+                int ebCount = Math.Min(enemyBullets.Count, 100);
+                pkt.EnemyBulletCount = ebCount;
+                pkt.EnemyBulletX = new float[ebCount];
+                pkt.EnemyBulletY = new float[ebCount];
+                for (int i = 0; i < ebCount && i < enemyBullets.Count; i++)
+                {
+                    pkt.EnemyBulletX[i] = enemyBullets[i].x;
+                    pkt.EnemyBulletY[i] = enemyBullets[i].y;
+                }
             }
             catch { /* list changed during iteration, skip this frame */ }
 
@@ -5200,22 +5330,47 @@ namespace gamething
         {
             try
             {
-                // On client: update everything from host's authoritative state
+                // On client: host is "Player 2" visually, client is "me"
                 p2X = state.HostX;
                 p2Y = state.HostY;
                 p2Health = state.HostHealth;
                 p2MaxHealth = state.HostMaxHealth;
                 p2Dashing = state.HostDashing;
+                p2Dead = state.HostDead;
 
                 posX = state.ClientX;
                 posY = state.ClientY;
                 health = state.ClientHealth;
                 maxHealth = state.ClientMaxHealth;
                 isDashing = state.ClientDashing;
+                hostDead = state.ClientDead; // "hostDead" on client means "my dead state"
 
                 score = state.HostScore;
                 timeAlive = state.TimeAlive;
                 totalKills = state.TotalKills;
+
+                // Sync abilities
+                superActive = state.SuperActive;
+                superTimer = state.SuperTimer;
+                superCooldown = state.SuperCooldown;
+                wallActive = state.WallActive;
+                wallTimer = state.WallTimer;
+                boxWall = state.BoxWall;
+
+                // Sync walls
+                if (state.WallActive && state.WallCount > 0)
+                {
+                    if (state.BoxWall && state.WallCount > 1)
+                    {
+                        boxWalls = new List<(float x, float y, float width, float height, float angle)>(state.WallCount);
+                        for (int i = 0; i < state.WallCount; i++)
+                            boxWalls.Add((state.WallX[i], state.WallY[i], state.WallWidth[i], state.WallHeight[i], state.WallAngle[i]));
+                    }
+                    else if (state.WallCount >= 1)
+                    {
+                        tempWall = (state.WallX[0], state.WallY[0], state.WallWidth[0], state.WallHeight[0], state.WallAngle[0]);
+                    }
+                }
 
                 bossAlive = state.BossActive;
                 if (state.BossActive)
@@ -5249,7 +5404,7 @@ namespace gamething
                     enemyIsVisible[i] = true;
                 }
 
-                // Sync bullets — rebuild list instead of clear+add to avoid mid-iteration crash
+                // Sync bullets
                 var newBullets = new List<(float x, float y, float velX, float velY, int bounces)>(state.BulletCount);
                 for (int i = 0; i < state.BulletCount; i++)
                     newBullets.Add((state.BulletX[i], state.BulletY[i], 0, 0, 0));
@@ -5260,12 +5415,31 @@ namespace gamething
                 for (int i = 0; i < state.CoinCount; i++)
                     newCoins.Add((state.CoinX[i], state.CoinY[i], 0, 0));
                 coins = newCoins;
+
+                // Sync enemy bullets
+                var newEB = new List<(float x, float y, float velX, float velY)>(state.EnemyBulletCount);
+                for (int i = 0; i < state.EnemyBulletCount; i++)
+                    newEB.Add((state.EnemyBulletX[i], state.EnemyBulletY[i], 0, 0));
+                enemyBullets = newEB;
+
+                // Handle death states
+                if (state.ClientDead && health <= 0)
+                {
+                    // I (client) am dead — don't process movement/shooting
+                }
+                if (state.HostDead && state.ClientDead)
+                {
+                    // Both dead — trigger game over on client
+                    HandlePlayerDeath();
+                }
             }
             catch { /* state packet race condition, skip frame */ }
         }
 
         private void ApplyP2Input(PlayerInputPacket input)
         {
+            if (p2Dead) return; // dead P2 can't move or act
+
             // Host simulates P2 movement
             float p2Speed = speed;
             if (input.MoveX != 0 || input.MoveY != 0)
@@ -5295,6 +5469,115 @@ namespace gamething
                     bullets.Add((cx + dirX / dist * 20, cy + dirY / dist * 20, vx, vy, 0));
                 }
             }
+
+            // P2 ability activations
+            if (input.ActivateSuper && !superActive && superCooldown <= 0)
+            {
+                superActive = true;
+                superTimer = superDuration;
+                reloading = false;
+                reloadTimer = 0f;
+            }
+            if (input.ActivateWall && !wallActive && wallCooldown <= 0)
+            {
+                wallActive = true;
+                wallTimer = wallDuration;
+                wallCooldown = wallCooldownTime;
+                if (boxWall)
+                {
+                    float cx2 = p2X + playerSize / 2;
+                    float cy2 = p2Y + playerSize / 2;
+                    float offset = wallLength / 2;
+                    boxWalls = new List<(float x, float y, float width, float height, float angle)>
+                    {
+                        (cx2, cy2 - offset, wallLength, boxSize, 0f),
+                        (cx2, cy2 + offset, wallLength, boxSize, 0f),
+                        (cx2 - offset, cy2, wallLength, boxSize, (float)(Math.PI / 2)),
+                        (cx2 + offset, cy2, wallLength, boxSize, (float)(Math.PI / 2)),
+                    };
+                }
+                else
+                {
+                    boxWalls.Clear();
+                    float wDirX = input.WallAimX - (p2X + boxSize / 2);
+                    float wDirY = input.WallAimY - (p2Y + boxSize / 2);
+                    float wDist = (float)Math.Sqrt(wDirX * wDirX + wDirY * wDirY);
+                    float angle = (float)Math.Atan2(wDirY, wDirX) + (float)(Math.PI / 2);
+                    float spawnX = p2X + boxSize / 2;
+                    float spawnY = p2Y + boxSize / 2;
+                    if (wDist > 0) { spawnX = p2X + (wDirX / wDist) * (boxSize * 2); spawnY = p2Y + (wDirY / wDist) * (boxSize * 2); }
+                    tempWall = (spawnX, spawnY, wallLength, boxSize, angle);
+                }
+            }
+
+            // P2 upgrade purchases (shared money)
+            if (input.UpgradePurchaseIndex >= 0)
+            {
+                ApplyUpgradeByIndex(input.UpgradePurchaseIndex);
+            }
+        }
+
+        private static readonly int[] UpgradeCosts = {
+            190, 450, 470, 500, 510, 600, 610, 650, 660, 670, 690, 730, 750, 790, 800, 800,
+            900, 950, 950, 1000, 1010, 1200, 1230, 1250, 1290, 1300, 1350, 1390, 1410, 1600,
+            2200, 3100, 950, 750, 900, 1300, 600, 1400, 820, 1500, 1400, 1100, 1200, 1100
+        };
+
+        private void ApplyUpgradeByIndex(int index)
+        {
+            if (index < 0 || index >= UpgradeCosts.Length) return;
+            int cost = UpgradeCosts[index];
+            if (score < cost) return;
+            score -= cost;
+            totalUpgradesPurchased++;
+            if (cashback) totalSpentSinceLastCashback += cost;
+            switch (index)
+            {
+                case 0: wallLength += boxSize; wallDuration += 5; break;
+                case 1: maxHealth += 10; health = Math.Min(health + 10, maxHealth); break;
+                case 2: if (scoreTimerMax > 0.05) scoreTimerMax -= 0.05f; else score += 470; break;
+                case 3: bulletSpeed++; break;
+                case 4: scorePerSecond++; break;
+                case 5: playerSize += 10; bulletSize += 3; speed += 0.5f; dashPower += 1; break;
+                case 6: decoyDuration += 1; break;
+                case 7: shootRate = Math.Max(0.05f, shootRate - 0.1f); break;
+                case 8: dashDuration += 0.1f; break;
+                case 9: dashCooldownTime = Math.Max(0.5f, dashCooldownTime - 0.1f); break;
+                case 10: explosiveFinish = true; break;
+                case 11: reloadTime = Math.Max(0.5f, reloadTime - 0.5f); break;
+                case 12: afterburn = true; break;
+                case 13: blinkCooldownTime = Math.Max(5f, blinkCooldownTime - 5f); break;
+                case 14: maxAmmo += 5; ammo = Math.Min(ammo + 5, maxAmmo); break;
+                case 15: toughLove = true; break;
+                case 16: superCooldownTime = Math.Max(2f, superCooldownTime - 2f); break;
+                case 17: ricochetBounces += 2; break;
+                case 18: doubleTap = true; break;
+                case 19: medic = true; break;
+                case 20: jackpot = true; break;
+                case 21: orbitCount++; break;
+                case 22: boxWall = true; break;
+                case 23: flameWall = true; break;
+                case 24: coinWorth++; break;
+                case 25: ghostDash = true; break;
+                case 26: decoy = true; break;
+                case 27: blink = true; break;
+                case 28: shrapnel = true; break;
+                case 29: lifeSteal++; break;
+                case 30: piercingBullets = true; break;
+                case 31: homing = true; break;
+                case 32: speedTrap = true; break;
+                case 33: thorns = true; break;
+                case 34: cashback = true; break;
+                case 35: orbitalStrike = true; break;
+                case 36: orbitRadiusBonus += 30f; break;
+                case 37: turret = true; break;
+                case 38: rapidReload = true; break;
+                case 39: explosiveOrbit = true; break;
+                case 40: ricochetExplosion = true; break;
+                case 41: bloodMoney = true; break;
+                case 42: parasiteImmune = true; break;
+                case 43: lastStand = true; break;
+            }
         }
 
         private void InitMultiplayerCallbacks()
@@ -5317,6 +5600,8 @@ namespace gamething
             menuPlayBtn.Visible = false;
             menuQuitBtn.Visible = false;
             menuPrefsBtn.Visible = false;
+            menuBestiaryBtn.Visible = false;
+            menuHistoryBtn.Visible = false;
 
             List<Control> mpControls = new();
 
@@ -5461,6 +5746,8 @@ namespace gamething
                 menuPlayBtn.Visible = true;
                 menuQuitBtn.Visible = true;
                 menuPrefsBtn.Visible = true;
+                menuBestiaryBtn.Visible = true;
+                menuHistoryBtn.Visible = true;
             }
 
             void StartGame(bool asHost)

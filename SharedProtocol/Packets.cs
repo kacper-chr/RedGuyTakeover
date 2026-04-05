@@ -103,6 +103,11 @@ public struct PlayerInputPacket : INetSerializable
     public float AimY;
     public bool Shooting;
     public bool Dashing;
+    public bool ActivateSuper;
+    public bool ActivateWall;
+    public float WallAimX;
+    public float WallAimY;
+    public int UpgradePurchaseIndex; // -1 = none, 0+ = upgrade index
 
     public void Serialize(NetDataWriter writer)
     {
@@ -112,6 +117,11 @@ public struct PlayerInputPacket : INetSerializable
         writer.Put(AimY);
         writer.Put(Shooting);
         writer.Put(Dashing);
+        writer.Put(ActivateSuper);
+        writer.Put(ActivateWall);
+        writer.Put(WallAimX);
+        writer.Put(WallAimY);
+        writer.Put(UpgradePurchaseIndex);
     }
 
     public void Deserialize(NetDataReader reader)
@@ -122,6 +132,11 @@ public struct PlayerInputPacket : INetSerializable
         AimY = reader.GetFloat();
         Shooting = reader.GetBool();
         Dashing = reader.GetBool();
+        ActivateSuper = reader.GetBool();
+        ActivateWall = reader.GetBool();
+        WallAimX = reader.GetFloat();
+        WallAimY = reader.GetFloat();
+        UpgradePurchaseIndex = reader.GetInt();
     }
 }
 
@@ -144,6 +159,22 @@ public struct GameStatePacket : INetSerializable
     public bool BossActive;
     public float BossX, BossY, BossHealth, BossMaxHealth;
 
+    // Abilities
+    public bool SuperActive;
+    public float SuperTimer;
+    public float SuperCooldown;
+    public bool WallActive;
+    public float WallTimer;
+    public bool BoxWall;
+
+    // Wall data (up to 4 box walls or 1 temp wall)
+    public int WallCount;
+    public float[] WallX;
+    public float[] WallY;
+    public float[] WallWidth;
+    public float[] WallHeight;
+    public float[] WallAngle;
+
     // Enemy count + packed data
     public int EnemyCount;
     public float[] EnemyX;
@@ -160,6 +191,15 @@ public struct GameStatePacket : INetSerializable
     public int CoinCount;
     public float[] CoinX;
     public float[] CoinY;
+
+    // Enemy bullet count + packed data
+    public int EnemyBulletCount;
+    public float[] EnemyBulletX;
+    public float[] EnemyBulletY;
+
+    // Player death flags
+    public bool HostDead;
+    public bool ClientDead;
 
     public void Serialize(NetDataWriter writer)
     {
@@ -181,6 +221,21 @@ public struct GameStatePacket : INetSerializable
             writer.Put(BossHealth); writer.Put(BossMaxHealth);
         }
 
+        writer.Put(SuperActive);
+        writer.Put(SuperTimer);
+        writer.Put(SuperCooldown);
+        writer.Put(WallActive);
+        writer.Put(WallTimer);
+        writer.Put(BoxWall);
+
+        writer.Put(WallCount);
+        for (int i = 0; i < WallCount; i++)
+        {
+            writer.Put(WallX[i]); writer.Put(WallY[i]);
+            writer.Put(WallWidth[i]); writer.Put(WallHeight[i]);
+            writer.Put(WallAngle[i]);
+        }
+
         writer.Put(EnemyCount);
         for (int i = 0; i < EnemyCount; i++)
         {
@@ -200,6 +255,15 @@ public struct GameStatePacket : INetSerializable
         {
             writer.Put(CoinX[i]); writer.Put(CoinY[i]);
         }
+
+        writer.Put(EnemyBulletCount);
+        for (int i = 0; i < EnemyBulletCount; i++)
+        {
+            writer.Put(EnemyBulletX[i]); writer.Put(EnemyBulletY[i]);
+        }
+
+        writer.Put(HostDead);
+        writer.Put(ClientDead);
     }
 
     public void Deserialize(NetDataReader reader)
@@ -220,6 +284,26 @@ public struct GameStatePacket : INetSerializable
         {
             BossX = reader.GetFloat(); BossY = reader.GetFloat();
             BossHealth = reader.GetFloat(); BossMaxHealth = reader.GetFloat();
+        }
+
+        SuperActive = reader.GetBool();
+        SuperTimer = reader.GetFloat();
+        SuperCooldown = reader.GetFloat();
+        WallActive = reader.GetBool();
+        WallTimer = reader.GetFloat();
+        BoxWall = reader.GetBool();
+
+        WallCount = reader.GetInt();
+        WallX = new float[WallCount];
+        WallY = new float[WallCount];
+        WallWidth = new float[WallCount];
+        WallHeight = new float[WallCount];
+        WallAngle = new float[WallCount];
+        for (int i = 0; i < WallCount; i++)
+        {
+            WallX[i] = reader.GetFloat(); WallY[i] = reader.GetFloat();
+            WallWidth[i] = reader.GetFloat(); WallHeight[i] = reader.GetFloat();
+            WallAngle[i] = reader.GetFloat();
         }
 
         EnemyCount = reader.GetInt();
@@ -249,5 +333,16 @@ public struct GameStatePacket : INetSerializable
         {
             CoinX[i] = reader.GetFloat(); CoinY[i] = reader.GetFloat();
         }
+
+        EnemyBulletCount = reader.GetInt();
+        EnemyBulletX = new float[EnemyBulletCount];
+        EnemyBulletY = new float[EnemyBulletCount];
+        for (int i = 0; i < EnemyBulletCount; i++)
+        {
+            EnemyBulletX[i] = reader.GetFloat(); EnemyBulletY[i] = reader.GetFloat();
+        }
+
+        HostDead = reader.GetBool();
+        ClientDead = reader.GetBool();
     }
 }
