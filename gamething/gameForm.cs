@@ -1782,35 +1782,34 @@ namespace gamething
             // --- Multiplayer network sync ---
             if (isMultiplayer && netManager != null)
             {
-                netManager.PollEvents();
-
-                if (isNetHost)
+                try
                 {
-                    // Apply P2 input from client
-                    ApplyP2Input(latestP2Input);
+                    netManager.PollEvents();
 
-                    // Send game state to client
-                    var state = BuildGameStatePacket();
-                    netManager.SendGameState(state);
-                }
-                else
-                {
-                    // Client: send our input to host
-                    var input = new PlayerInputPacket
+                    if (isNetHost)
                     {
-                        MoveX = velocityX,
-                        MoveY = velocityY,
-                        AimX = mousePos.X,
-                        AimY = mousePos.Y,
-                        Shooting = mouseHeld,
-                        Dashing = isDashing
-                    };
-                    netManager.SendPlayerInput(input);
+                        ApplyP2Input(latestP2Input);
+                        var state = BuildGameStatePacket();
+                        netManager.SendGameState(state);
+                    }
+                    else
+                    {
+                        var input = new PlayerInputPacket
+                        {
+                            MoveX = velocityX,
+                            MoveY = velocityY,
+                            AimX = mousePos.X,
+                            AimY = mousePos.Y,
+                            Shooting = mouseHeld,
+                            Dashing = isDashing
+                        };
+                        netManager.SendPlayerInput(input);
 
-                    // Apply latest state from host
-                    if (latestGameState.HasValue)
-                        ApplyGameState(latestGameState.Value);
+                        if (latestGameState.HasValue)
+                            ApplyGameState(latestGameState.Value);
+                    }
                 }
+                catch { /* network error, skip frame */ }
             }
 
             this.Invalidate();
@@ -5155,101 +5154,114 @@ namespace gamething
                 BossHealth = bossHealth, BossMaxHealth = bossMaxHealth,
             };
 
-            int eCount = Math.Min(enemies.Count, 100);
-            pkt.EnemyCount = eCount;
-            pkt.EnemyX = new float[eCount];
-            pkt.EnemyY = new float[eCount];
-            pkt.EnemyAlive = new bool[eCount];
-            pkt.EnemyType = new int[eCount];
-            for (int i = 0; i < eCount; i++)
+            try
             {
-                pkt.EnemyX[i] = enemies[i].x;
-                pkt.EnemyY[i] = enemies[i].y;
-                pkt.EnemyAlive[i] = i < enemyAlive.Count && enemyAlive[i];
-                pkt.EnemyType[i] = (i < enemyIsTank.Count && enemyIsTank[i]) ? 1 :
-                                   (i < enemyCanShoot.Count && enemyCanShoot[i]) ? 2 : 0;
-            }
+                int eCount = Math.Min(enemies.Count, 100);
+                pkt.EnemyCount = eCount;
+                pkt.EnemyX = new float[eCount];
+                pkt.EnemyY = new float[eCount];
+                pkt.EnemyAlive = new bool[eCount];
+                pkt.EnemyType = new int[eCount];
+                for (int i = 0; i < eCount && i < enemies.Count; i++)
+                {
+                    pkt.EnemyX[i] = enemies[i].x;
+                    pkt.EnemyY[i] = enemies[i].y;
+                    pkt.EnemyAlive[i] = i < enemyAlive.Count && enemyAlive[i];
+                    pkt.EnemyType[i] = (i < enemyIsTank.Count && enemyIsTank[i]) ? 1 :
+                                       (i < enemyCanShoot.Count && enemyCanShoot[i]) ? 2 : 0;
+                }
 
-            int bCount = Math.Min(bullets.Count, 200);
-            pkt.BulletCount = bCount;
-            pkt.BulletX = new float[bCount];
-            pkt.BulletY = new float[bCount];
-            for (int i = 0; i < bCount; i++)
-            {
-                pkt.BulletX[i] = bullets[i].x;
-                pkt.BulletY[i] = bullets[i].y;
-            }
+                int bCount = Math.Min(bullets.Count, 200);
+                pkt.BulletCount = bCount;
+                pkt.BulletX = new float[bCount];
+                pkt.BulletY = new float[bCount];
+                for (int i = 0; i < bCount && i < bullets.Count; i++)
+                {
+                    pkt.BulletX[i] = bullets[i].x;
+                    pkt.BulletY[i] = bullets[i].y;
+                }
 
-            int cCount = Math.Min(coins.Count, 50);
-            pkt.CoinCount = cCount;
-            pkt.CoinX = new float[cCount];
-            pkt.CoinY = new float[cCount];
-            for (int i = 0; i < cCount; i++)
-            {
-                pkt.CoinX[i] = coins[i].x;
-                pkt.CoinY[i] = coins[i].y;
+                int cCount = Math.Min(coins.Count, 50);
+                pkt.CoinCount = cCount;
+                pkt.CoinX = new float[cCount];
+                pkt.CoinY = new float[cCount];
+                for (int i = 0; i < cCount && i < coins.Count; i++)
+                {
+                    pkt.CoinX[i] = coins[i].x;
+                    pkt.CoinY[i] = coins[i].y;
+                }
             }
+            catch { /* list changed during iteration, skip this frame */ }
 
             return pkt;
         }
 
         private void ApplyGameState(GameStatePacket state)
         {
-            // On client: update everything from host's authoritative state
-            // Host player position (rendered as "other player" on client)
-            p2X = state.HostX;
-            p2Y = state.HostY;
-            p2Health = state.HostHealth;
-            p2MaxHealth = state.HostMaxHealth;
-            p2Dashing = state.HostDashing;
-
-            // Our own position (as simulated by host)
-            posX = state.ClientX;
-            posY = state.ClientY;
-            health = state.ClientHealth;
-            maxHealth = state.ClientMaxHealth;
-            isDashing = state.ClientDashing;
-
-            score = state.HostScore;
-            timeAlive = state.TimeAlive;
-            totalKills = state.TotalKills;
-
-            bossAlive = state.BossActive;
-            if (state.BossActive)
+            try
             {
-                bossX = state.BossX;
-                bossY = state.BossY;
-                bossHealth = state.BossHealth;
-                bossMaxHealth = state.BossMaxHealth;
+                // On client: update everything from host's authoritative state
+                p2X = state.HostX;
+                p2Y = state.HostY;
+                p2Health = state.HostHealth;
+                p2MaxHealth = state.HostMaxHealth;
+                p2Dashing = state.HostDashing;
+
+                posX = state.ClientX;
+                posY = state.ClientY;
+                health = state.ClientHealth;
+                maxHealth = state.ClientMaxHealth;
+                isDashing = state.ClientDashing;
+
+                score = state.HostScore;
+                timeAlive = state.TimeAlive;
+                totalKills = state.TotalKills;
+
+                bossAlive = state.BossActive;
+                if (state.BossActive)
+                {
+                    bossX = state.BossX;
+                    bossY = state.BossY;
+                    bossHealth = state.BossHealth;
+                    bossMaxHealth = state.BossMaxHealth;
+                }
+
+                // Sync enemies — pad ALL parallel lists to avoid index out of range
+                int ec = state.EnemyCount;
+                while (enemies.Count < ec) enemies.Add((0, 0));
+                while (enemyAlive.Count < ec) enemyAlive.Add(false);
+                while (enemyIsTank.Count < ec) enemyIsTank.Add(false);
+                while (enemyCanShoot.Count < ec) enemyCanShoot.Add(false);
+                while (enemyIsRunner.Count < ec) enemyIsRunner.Add(false);
+                while (enemyHealth.Count < ec) enemyHealth.Add(0);
+                while (enemyRespawnTimers.Count < ec) enemyRespawnTimers.Add(0);
+                while (enemyIsParasitic.Count < ec) enemyIsParasitic.Add(false);
+                while (enemyIsPhasing.Count < ec) enemyIsPhasing.Add(false);
+                while (enemyIsBerserker.Count < ec) enemyIsBerserker.Add(false);
+                while (enemyIsVisible.Count < ec) enemyIsVisible.Add(true);
+
+                for (int i = 0; i < ec; i++)
+                {
+                    enemies[i] = (state.EnemyX[i], state.EnemyY[i]);
+                    enemyAlive[i] = state.EnemyAlive[i];
+                    enemyIsTank[i] = state.EnemyType[i] == 1;
+                    enemyCanShoot[i] = state.EnemyType[i] == 2;
+                    enemyIsVisible[i] = true;
+                }
+
+                // Sync bullets — rebuild list instead of clear+add to avoid mid-iteration crash
+                var newBullets = new List<(float x, float y, float velX, float velY, int bounces)>(state.BulletCount);
+                for (int i = 0; i < state.BulletCount; i++)
+                    newBullets.Add((state.BulletX[i], state.BulletY[i], 0, 0, 0));
+                bullets = newBullets;
+
+                // Sync coins
+                var newCoins = new List<(float x, float y, float velX, float velY)>(state.CoinCount);
+                for (int i = 0; i < state.CoinCount; i++)
+                    newCoins.Add((state.CoinX[i], state.CoinY[i], 0, 0));
+                coins = newCoins;
             }
-
-            // Sync enemies for rendering
-            while (enemies.Count < state.EnemyCount)
-                enemies.Add((0, 0));
-            while (enemyAlive.Count < state.EnemyCount)
-                enemyAlive.Add(false);
-            while (enemyIsTank.Count < state.EnemyCount)
-                enemyIsTank.Add(false);
-            while (enemyCanShoot.Count < state.EnemyCount)
-                enemyCanShoot.Add(false);
-
-            for (int i = 0; i < state.EnemyCount; i++)
-            {
-                enemies[i] = (state.EnemyX[i], state.EnemyY[i]);
-                enemyAlive[i] = state.EnemyAlive[i];
-                enemyIsTank[i] = state.EnemyType[i] == 1;
-                enemyCanShoot[i] = state.EnemyType[i] == 2;
-            }
-
-            // Sync bullets for rendering
-            bullets.Clear();
-            for (int i = 0; i < state.BulletCount; i++)
-                bullets.Add((state.BulletX[i], state.BulletY[i], 0, 0, 0));
-
-            // Sync coins for rendering
-            coins.Clear();
-            for (int i = 0; i < state.CoinCount; i++)
-                coins.Add((state.CoinX[i], state.CoinY[i], 0, 0));
+            catch { /* state packet race condition, skip frame */ }
         }
 
         private void ApplyP2Input(PlayerInputPacket input)
