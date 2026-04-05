@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Red Guy Takeover</AssemblyName>
     <Company>Zombie</Company>
-    <ApplicationIcon>bin\Debug\net8.0-windows8.0\Resources\oort.ico</ApplicationIcon>
+    <ApplicationIcon>Resources\oort.ico</ApplicationIcon>
     <SupportedOSPlatformVersion>8.0</SupportedOSPlatformVersion>
     <Title>Red Guy Takeover</Title>
     <PackAsTool>True</PackAsTool>
@@ -19,16 +19,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="bin\Debug\net8.0-windows8.0\Resources\oort.ico" />
+    <Content Include="Resources\oort.ico" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Autoupdater.NET.Official" Version="1.9.2" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.5" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Folder Include="bin\Debug\net8.0-windows\Resources\" />
   </ItemGroup>
 
 </Project>
