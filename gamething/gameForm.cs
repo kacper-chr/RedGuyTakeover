@@ -398,9 +398,9 @@ namespace gamething
 
         // --- Multiplayer ---
         private NetworkManager? netManager = null;
+        private EmbeddedRelay? embeddedRelay = null;
         private bool isMultiplayer = false;
         private bool isNetHost = false;
-        private string relayServerIp = "127.0.0.1"; // TODO: set to your Oracle Cloud VM IP
 
         // Player 2 state (rendered on both host and client)
         private float p2X = 0f, p2Y = 0f;
@@ -5317,35 +5317,18 @@ namespace gamething
             mpControls.Add(titleLabel);
 
             Label statusLabel = new Label();
-            statusLabel.Text = "Not connected";
+            statusLabel.Text = "Choose Host or Join";
             statusLabel.Font = new Font("Arial", 11);
             statusLabel.ForeColor = Color.Gray;
-            statusLabel.Size = new Size(400, 25);
+            statusLabel.Size = new Size(500, 25);
             statusLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 55);
             mpControls.Add(statusLabel);
 
-            Label serverLabel = new Label();
-            serverLabel.Text = "Server IP:";
-            serverLabel.Font = new Font("Arial", 11);
-            serverLabel.ForeColor = Color.White;
-            serverLabel.Size = new Size(80, 25);
-            serverLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 20);
-            mpControls.Add(serverLabel);
-
-            TextBox serverIpBox = new TextBox();
-            serverIpBox.Text = relayServerIp;
-            serverIpBox.Font = new Font("Consolas", 12);
-            serverIpBox.Size = new Size(200, 30);
-            serverIpBox.Location = new Point((int)(130 * scaleX), ClientSize.Height / 2 - 22);
-            serverIpBox.BackColor = Color.FromArgb(30, 30, 45);
-            serverIpBox.ForeColor = Color.White;
-            serverIpBox.BorderStyle = BorderStyle.FixedSingle;
-            mpControls.Add(serverIpBox);
-
+            // --- HOST section ---
             Button hostBtn = new Button();
             hostBtn.Text = "🏠 Host Game";
             hostBtn.Size = new Size(250, 50);
-            hostBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 20);
+            hostBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 15);
             hostBtn.BackColor = Color.FromArgb(40, 100, 40);
             hostBtn.ForeColor = Color.White;
             hostBtn.FlatStyle = FlatStyle.Flat;
@@ -5357,31 +5340,58 @@ namespace gamething
             roomCodeLabel.Text = "";
             roomCodeLabel.Font = new Font("Consolas", 22, FontStyle.Bold);
             roomCodeLabel.ForeColor = Color.Gold;
-            roomCodeLabel.Size = new Size(300, 40);
-            roomCodeLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 80);
+            roomCodeLabel.Size = new Size(400, 40);
+            roomCodeLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 45);
             mpControls.Add(roomCodeLabel);
 
+            Label ipInfoLabel = new Label();
+            ipInfoLabel.Text = "";
+            ipInfoLabel.Font = new Font("Arial", 10);
+            ipInfoLabel.ForeColor = Color.FromArgb(150, 180, 220);
+            ipInfoLabel.Size = new Size(500, 45);
+            ipInfoLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 85);
+            mpControls.Add(ipInfoLabel);
+
+            // --- OR ---
             Label orLabel = new Label();
             orLabel.Text = "— OR —";
             orLabel.Font = new Font("Arial", 11);
             orLabel.ForeColor = Color.Gray;
             orLabel.Size = new Size(250, 25);
-            orLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 125);
+            orLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 130);
             orLabel.TextAlign = ContentAlignment.MiddleCenter;
             mpControls.Add(orLabel);
 
-            Label joinLabel = new Label();
-            joinLabel.Text = "Room Code:";
-            joinLabel.Font = new Font("Arial", 11);
-            joinLabel.ForeColor = Color.White;
-            joinLabel.Size = new Size(100, 25);
-            joinLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 160);
-            mpControls.Add(joinLabel);
+            // --- JOIN section ---
+            Label hostIpLabel = new Label();
+            hostIpLabel.Text = "Host IP:";
+            hostIpLabel.Font = new Font("Arial", 11);
+            hostIpLabel.ForeColor = Color.White;
+            hostIpLabel.Size = new Size(70, 25);
+            hostIpLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 162);
+            mpControls.Add(hostIpLabel);
+
+            TextBox hostIpBox = new TextBox();
+            hostIpBox.Font = new Font("Consolas", 12);
+            hostIpBox.Size = new Size(180, 30);
+            hostIpBox.Location = new Point((int)(115 * scaleX), ClientSize.Height / 2 + 160);
+            hostIpBox.BackColor = Color.FromArgb(30, 30, 45);
+            hostIpBox.ForeColor = Color.White;
+            hostIpBox.BorderStyle = BorderStyle.FixedSingle;
+            mpControls.Add(hostIpBox);
+
+            Label joinCodeLabel = new Label();
+            joinCodeLabel.Text = "Code:";
+            joinCodeLabel.Font = new Font("Arial", 11);
+            joinCodeLabel.ForeColor = Color.White;
+            joinCodeLabel.Size = new Size(50, 25);
+            joinCodeLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 197);
+            mpControls.Add(joinCodeLabel);
 
             TextBox codeBox = new TextBox();
             codeBox.Font = new Font("Consolas", 14);
-            codeBox.Size = new Size(130, 30);
-            codeBox.Location = new Point((int)(150 * scaleX), ClientSize.Height / 2 + 157);
+            codeBox.Size = new Size(110, 30);
+            codeBox.Location = new Point((int)(95 * scaleX), ClientSize.Height / 2 + 195);
             codeBox.BackColor = Color.FromArgb(30, 30, 45);
             codeBox.ForeColor = Color.White;
             codeBox.BorderStyle = BorderStyle.FixedSingle;
@@ -5392,7 +5402,7 @@ namespace gamething
             Button joinBtn = new Button();
             joinBtn.Text = "🔗 Join";
             joinBtn.Size = new Size(120, 50);
-            joinBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 195);
+            joinBtn.Location = new Point((int)(215 * scaleX), ClientSize.Height / 2 + 185);
             joinBtn.BackColor = Color.FromArgb(40, 80, 140);
             joinBtn.ForeColor = Color.White;
             joinBtn.FlatStyle = FlatStyle.Flat;
@@ -5403,7 +5413,7 @@ namespace gamething
             Button startBtn = new Button();
             startBtn.Text = "▶ Start Game";
             startBtn.Size = new Size(250, 50);
-            startBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 260);
+            startBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 250);
             startBtn.BackColor = Color.FromArgb(40, 100, 40);
             startBtn.ForeColor = Color.White;
             startBtn.FlatStyle = FlatStyle.Flat;
@@ -5415,7 +5425,7 @@ namespace gamething
             Button backBtn = new Button();
             backBtn.Text = "◀ Back";
             backBtn.Size = new Size(250, 35);
-            backBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 320);
+            backBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 310);
             backBtn.BackColor = Color.FromArgb(60, 60, 60);
             backBtn.ForeColor = Color.White;
             backBtn.FlatStyle = FlatStyle.Flat;
@@ -5431,23 +5441,86 @@ namespace gamething
                     netManager.Disconnect();
                     netManager = null;
                 }
+                if (embeddedRelay != null && !isMultiplayer)
+                {
+                    embeddedRelay.Stop();
+                    embeddedRelay = null;
+                }
                 menuPlayBtn.Visible = true;
                 menuQuitBtn.Visible = true;
                 menuPrefsBtn.Visible = true;
+            }
+
+            void StartGame(bool asHost)
+            {
+                isMultiplayer = true;
+                isNetHost = asHost;
+                InitMultiplayerCallbacks();
+                if (asHost) netManager?.SendGameStart();
+                foreach (var c in mpControls) this.Controls.Remove(c);
+                this.Controls.Remove(menuPlayBtn);
+                this.Controls.Remove(menuQuitBtn);
+                this.Controls.Remove(menuPrefsBtn);
+                this.Controls.Remove(menuHistoryBtn);
+                this.Controls.Remove(menuBestiaryBtn);
+                this.Controls.Remove(menuAchievementsBtn);
+                this.Controls.Remove(menuMultiplayerBtn);
+                onMainMenu = false;
+                isPaused = false;
+                difficulty = 0;
+                sandboxMode = false;
+                ApplyDifficulty();
+                ResetGame();
+                if (asHost) { p2X = posX + 50; p2Y = posY; p2Health = maxHealth; p2MaxHealth = maxHealth; }
             }
 
             backBtn.Click += (s, e) => Cleanup();
 
             hostBtn.Click += (s, e) =>
             {
-                relayServerIp = serverIpBox.Text.Trim();
+                // Start embedded relay server
+                embeddedRelay = new EmbeddedRelay();
+                try
+                {
+                    embeddedRelay.Start();
+                }
+                catch (Exception ex)
+                {
+                    statusLabel.Text = $"Failed to start server: {ex.Message}";
+                    statusLabel.ForeColor = Color.Red;
+                    return;
+                }
+
+                statusLabel.Text = "Server started! Connecting...";
+                statusLabel.ForeColor = Color.Yellow;
+
+                // Get public IP to show the player
+                ipInfoLabel.Text = "Fetching your public IP...";
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var http = new HttpClient();
+                        string publicIp = (await http.GetStringAsync("https://api.ipify.org")).Trim();
+                        this.Invoke(() =>
+                        {
+                            ipInfoLabel.Text = $"Your friend connects to: {publicIp}\n(Port forward UDP {EmbeddedRelay.Port} if on different network)";
+                        });
+                    }
+                    catch
+                    {
+                        this.Invoke(() => ipInfoLabel.Text = $"Could not fetch public IP. Port: {EmbeddedRelay.Port}");
+                    }
+                });
+
+                // Connect to our own relay
                 netManager = new NetworkManager();
                 netManager.OnRoomCreated += () =>
                 {
                     this.Invoke(() =>
                     {
                         roomCodeLabel.Text = $"Code: {netManager.RoomCode}";
-                        statusLabel.Text = netManager.StatusMessage;
+                        statusLabel.Text = "Waiting for player to join...";
                         statusLabel.ForeColor = Color.LimeGreen;
                     });
                 };
@@ -5472,18 +5545,10 @@ namespace gamething
                 };
                 netManager.OnError += msg =>
                 {
-                    this.Invoke(() =>
-                    {
-                        statusLabel.Text = msg;
-                        statusLabel.ForeColor = Color.Red;
-                    });
+                    this.Invoke(() => { statusLabel.Text = msg; statusLabel.ForeColor = Color.Red; });
                 };
 
-                netManager.Connect(relayServerIp);
-                statusLabel.Text = "Connecting...";
-                statusLabel.ForeColor = Color.Yellow;
-
-                // Poll until connected, then create room
+                netManager.Connect("127.0.0.1");
                 System.Windows.Forms.Timer connectTimer = new() { Interval = 100 };
                 connectTimer.Tick += (s2, e2) =>
                 {
@@ -5502,8 +5567,11 @@ namespace gamething
 
             joinBtn.Click += (s, e) =>
             {
-                if (codeBox.Text.Trim().Length < 5) return;
-                relayServerIp = serverIpBox.Text.Trim();
+                string ip = hostIpBox.Text.Trim();
+                string code = codeBox.Text.Trim().ToUpper();
+                if (ip.Length == 0) { statusLabel.Text = "Enter host IP"; statusLabel.ForeColor = Color.Red; return; }
+                if (code.Length < 5) { statusLabel.Text = "Enter 5-char room code"; statusLabel.ForeColor = Color.Red; return; }
+
                 netManager = new NetworkManager();
                 netManager.OnRoomJoined += () =>
                 {
@@ -5516,39 +5584,17 @@ namespace gamething
                 };
                 netManager.OnGameStartReceived += () =>
                 {
-                    this.Invoke(() =>
-                    {
-                        isMultiplayer = true;
-                        isNetHost = false;
-                        InitMultiplayerCallbacks();
-                        foreach (var c in mpControls) this.Controls.Remove(c);
-                        this.Controls.Remove(menuPlayBtn);
-                        this.Controls.Remove(menuQuitBtn);
-                        this.Controls.Remove(menuPrefsBtn);
-                        this.Controls.Remove(menuHistoryBtn);
-                        this.Controls.Remove(menuBestiaryBtn);
-                        this.Controls.Remove(menuAchievementsBtn);
-                        this.Controls.Remove(menuMultiplayerBtn);
-                        onMainMenu = false;
-                        isPaused = false;
-                        ApplyDifficulty();
-                        ResetGame();
-                    });
+                    this.Invoke(() => StartGame(false));
                 };
                 netManager.OnError += msg =>
                 {
-                    this.Invoke(() =>
-                    {
-                        statusLabel.Text = msg;
-                        statusLabel.ForeColor = Color.Red;
-                    });
+                    this.Invoke(() => { statusLabel.Text = msg; statusLabel.ForeColor = Color.Red; });
                 };
 
-                netManager.Connect(relayServerIp);
+                netManager.Connect(ip);
                 statusLabel.Text = "Connecting...";
                 statusLabel.ForeColor = Color.Yellow;
 
-                string code = codeBox.Text.Trim().ToUpper();
                 System.Windows.Forms.Timer connectTimer = new() { Interval = 100 };
                 connectTimer.Tick += (s2, e2) =>
                 {
@@ -5565,29 +5611,7 @@ namespace gamething
                 joinBtn.Enabled = false;
             };
 
-            startBtn.Click += (s, e) =>
-            {
-                isMultiplayer = true;
-                isNetHost = true;
-                InitMultiplayerCallbacks();
-                netManager?.SendGameStart();
-                foreach (var c in mpControls) this.Controls.Remove(c);
-                this.Controls.Remove(menuPlayBtn);
-                this.Controls.Remove(menuQuitBtn);
-                this.Controls.Remove(menuPrefsBtn);
-                this.Controls.Remove(menuHistoryBtn);
-                this.Controls.Remove(menuBestiaryBtn);
-                this.Controls.Remove(menuAchievementsBtn);
-                this.Controls.Remove(menuMultiplayerBtn);
-                onMainMenu = false;
-                isPaused = false;
-                difficulty = 0; // default Easy for multiplayer
-                sandboxMode = false;
-                ApplyDifficulty();
-                ResetGame();
-                p2X = posX + 50; p2Y = posY;
-                p2Health = maxHealth; p2MaxHealth = maxHealth;
-            };
+            startBtn.Click += (s, e) => StartGame(true);
 
             foreach (var c in mpControls)
             {
