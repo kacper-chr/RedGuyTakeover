@@ -574,10 +574,13 @@ namespace gamething
                     break;
                 case Keys.Escape:
                     isPaused = !isPaused;
-                    if (isPaused)
-                        ShowPauseButtons();
-                    else
-                        HidePauseButtons();
+                    if (!isMultiplayer)
+                    {
+                        if (isPaused)
+                            ShowPauseButtons();
+                        else
+                            HidePauseButtons();
+                    }
                     break;
                 case Keys.Q:
                     if (isMultiplayer && !isNetHost)
@@ -794,7 +797,9 @@ namespace gamething
                     }
                 }
                 this.Invalidate();
-                return;
+                // In multiplayer, don't freeze the game — just skip local input
+                if (!isMultiplayer)
+                    return;
             }
             if (dashCooldown > 0)
                 dashCooldown -= deltaTime;
@@ -838,8 +843,8 @@ namespace gamething
                     }
                 }
             }
-            // Skip movement/shooting if dead in multiplayer
-            if (hostDead) { velocityX = 0; velocityY = 0; }
+            // Skip movement/shooting if dead or paused in multiplayer
+            if (hostDead || (isMultiplayer && isPaused)) { velocityX = 0; velocityY = 0; }
             float toughLoveBonus = toughLove ? 1f + (1f - (health / maxHealth)) * 1.5f : 1f;
             float currentSpeed = isAfterburn ? afterburnSpeed : 1f;
             posX += velocityX * deltaTime * 60 * currentSpeed * toughLoveBonus;
@@ -925,7 +930,7 @@ namespace gamething
             }
             if (!isDashing)
                 (posX, posY) = PushOutOfWalls(posX, posY, boxSize);
-            if (mouseHeld && gameStartTimer > gameStartDelay && !reloading && !hostDead)
+            if (mouseHeld && gameStartTimer > gameStartDelay && !reloading && !hostDead && !(isMultiplayer && isPaused))
             {
                 if (shootCooldown <= 0 && (ammo > 0 || superActive))
                 {
@@ -1073,7 +1078,7 @@ namespace gamething
                     enemySpawnTimer += deltaTime;
                     if (enemySpawnTimer >= enemySpawnRate)
                     {
-                        if (isPaused) return;
+                        if (isPaused && !isMultiplayer) return;
                         bool newCanShoot = rng.NextDouble() < shootingEnemyChance;
                         bool newIsTank = !newCanShoot && rng.NextDouble() < tankEnemyChance;
                         bool newIsRunner = !newCanShoot && !newIsTank && rng.NextDouble() < runnerEnemyChance;
@@ -2532,10 +2537,18 @@ namespace gamething
                 float r = turretRange * scale;
                 e.Graphics.DrawEllipse(new Pen(Color.FromArgb(30, 100, 100, 100)), t.x - r, t.y - r, r * 2, r * 2);
             }
-            if (isPaused)
+            if (isPaused && !onMainMenu)
             {
-                e.Graphics.DrawString("Game Paused", new Font(Ufont, 32 * scaleY), textBrush, ClientSize.Width / 2 - 120, ClientSize.Height / 2 - 20);
-                e.Graphics.DrawString("Press ESC", GetFontUI(), textBrush, ClientSize.Width / 2 - 15, ClientSize.Height / 2 + 20);
+                if (isMultiplayer)
+                {
+                    e.Graphics.DrawString("AFK", new Font(Ufont, 32 * scaleY), textBrush, ClientSize.Width / 2 - 40, ClientSize.Height / 2 - 20);
+                    e.Graphics.DrawString("Press ESC to resume", GetFontUI(), textBrush, ClientSize.Width / 2 - 50, ClientSize.Height / 2 + 20);
+                }
+                else
+                {
+                    e.Graphics.DrawString("Game Paused", new Font(Ufont, 32 * scaleY), textBrush, ClientSize.Width / 2 - 120, ClientSize.Height / 2 - 20);
+                    e.Graphics.DrawString("Press ESC", GetFontUI(), textBrush, ClientSize.Width / 2 - 15, ClientSize.Height / 2 + 20);
+                }
             }
 
             foreach (var w in walls)
