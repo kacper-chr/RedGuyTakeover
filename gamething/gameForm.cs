@@ -5,6 +5,36 @@ namespace gamething
 {
     public partial class gameForm : Form
     {
+        private static readonly Random rng = new Random();
+        // --- Cached GDI+ resources (avoid allocating per frame) ---
+        private Font? _fontUI;
+        private Font? _fontUIBold;
+        private Font? _fontTitle;
+        private Font? _fontTitleLarge;
+        private Font? _fontSmall;
+        private Font? _fontEmoji;
+        private float _cachedScaleY = -1f;
+
+        private Font GetFontUI() { EnsureFontCache(); return _fontUI!; }
+        private Font GetFontUIBold() { EnsureFontCache(); return _fontUIBold!; }
+        private Font GetFontTitle() { EnsureFontCache(); return _fontTitle!; }
+        private Font GetFontTitleLarge() { EnsureFontCache(); return _fontTitleLarge!; }
+        private Font GetFontSmall() { EnsureFontCache(); return _fontSmall!; }
+        private Font GetFontEmoji() { EnsureFontCache(); return _fontEmoji!; }
+
+        private void EnsureFontCache()
+        {
+            if (_cachedScaleY == scaleY) return;
+            _fontUI?.Dispose(); _fontUIBold?.Dispose(); _fontTitle?.Dispose();
+            _fontTitleLarge?.Dispose(); _fontSmall?.Dispose(); _fontEmoji?.Dispose();
+            _fontUI = new Font("Arial", 10 * scaleY);
+            _fontUIBold = new Font("Arial", 10 * scaleY, FontStyle.Bold);
+            _fontTitle = new Font("Arial", 22 * scaleY, FontStyle.Bold);
+            _fontTitleLarge = new Font("Arial", 32 * scaleY);
+            _fontEmoji = new Font("Segoe UI Emoji", 22 * scaleY, FontStyle.Bold);
+            _fontSmall = new Font("Arial", 9 * scaleY);
+            _cachedScaleY = scaleY;
+        }
         // --- Position of player and enemy ---
         private float posX = 960f;
         private float posY = 540f;
@@ -346,7 +376,23 @@ namespace gamething
         private List<(float x, float y, float velX, float velY, float timer, Color color)> unlockParticles = new();
 
         private int pendingUnlockAnimation = -1;
+        // --- Run History ---
+        private List<(float score, int kills, float time, int difficulty, bool sandbox)> runHistory =
+            new List<(float score, int kills, float time, int difficulty, bool sandbox)>();
+        private const int maxRunHistory = 5;
 
+        // --- Bestiary ---
+        private Dictionary<string, int> beastiaryKills = new Dictionary<string, int>()
+{
+    { "Normal", 0 }, { "Gunner", 0 }, { "Tank", 0 }, { "Runner", 0 },
+    { "Parasitic", 0 }, { "Frenzied", 0 }, { "Zigzag", 0 }, { "Charging", 0 },
+    { "Armored", 0 }, { "Regenerating", 0 }, { "Reflective", 0 },
+    { "Berserker", 0 }, { "Phasing", 0 }, { "Corrupted", 0 }
+};
+        private bool beastiaryUnlocked = false;
+
+        private Button? menuHistoryBtn = null;
+        private Button? menuBestiaryBtn = null;
         public gameForm()
         {
             InitializeComponent();
@@ -367,6 +413,8 @@ namespace gamething
                 ResetEnemies();
                 ResetGame();
                 ShowMainMenu();
+                LoadRunHistory();
+                LoadBeastiary();
             };
             enemyRespawnTimers = new List<float>(new float[enemies.Count]);
             enemyAlive = Enumerable.Repeat(true, enemies.Count).ToList();
@@ -515,7 +563,6 @@ namespace gamething
             gameStartTimer += deltaTime;
             if (isPaused)
             {
-                this.Invalidate();
                 if (onMainMenu)
                 {
                     if (menuEnemyDead)
@@ -524,8 +571,7 @@ namespace gamething
                         if (menuEnemyDeadTimer <= 0)
                         {
                             menuEnemyDead = false;
-                            Random r = new Random();
-                            int roll = r.Next(10);
+                            int roll = rng.Next(10);
                             menuEnemyType = roll < 2 ? 2 : roll < 4 ? 1 : 0;
                             menuEnemyMaxHealth = menuEnemyType == 2 ? 8f : menuEnemyType == 1 ? 1f : 2f;
                             menuEnemyHealth = menuEnemyMaxHealth;
@@ -589,7 +635,6 @@ namespace gamething
 
                     if (showingUnlockAnimation)
                     {
-                        System.Diagnostics.Debug.WriteLine($"Animation update: timer={unlockAnimTimer:F2}");
                         unlockAnimTimer -= deltaTime;
                         unlockParticleTimer += deltaTime;
 
@@ -613,7 +658,6 @@ namespace gamething
 
                         if (unlockAnimTimer <= 0)
                         {
-                            System.Diagnostics.Debug.WriteLine("Animation ended");
                             showingUnlockAnimation = false;
                             unlockParticles.Clear();
                         }
@@ -622,7 +666,6 @@ namespace gamething
                 this.Invalidate();
                 return;
             }
-            if (isPaused) return;
             if (dashCooldown > 0)
                 dashCooldown -= deltaTime;
             if (gameStartTimer > gameStartDelay)
@@ -695,24 +738,6 @@ namespace gamething
                         }
                     }
                     newTrail.Add((t.x, t.y, newTimer));
-                }
-            }
-            if (isDashing)
-            {
-                dashTimer -= deltaTime;
-                float dashProgress = dashTimer / dashDuration;
-                posX += dashVelX * dashProgress * deltaTime * 60;
-                posY += dashVelY * dashProgress * deltaTime * 60;
-                if (dashTimer <= 0)
-                {
-                    isDashing = false;
-                    dashVelX = 0f;
-                    dashVelY = 0f;
-                    if (afterburn)
-                    {
-                        isAfterburn = true;
-                        afterburnTimer = afterburnDuration;
-                    }
                 }
             }
             if (isAfterburn)
@@ -820,7 +845,6 @@ namespace gamething
                     bossSpawnTimer = 0f;
                     bossAlive = true;
                     bossHealth = currentBossMaxHealth;
-                    Random rng = new Random();
                     int side = rng.Next(4);
                     switch (side)
                     {
@@ -856,30 +880,7 @@ namespace gamething
                         health -= bossDamage;
                         bossHitCooldown = 0.5f;
                         if (health <= 0)
-                        {
-                            health = 0;
-                            isPaused = true;
-                            ResetEnemies();
-                            enemySpawnTimer = 0f;
-                            parasites.Clear();
-                            bool retry = ShowDeathScreen();
-                            lastTick = DateTime.Now;
-                            int savedUnlock = pendingUnlockAnimation;
-                            if (retry)
-                            {
-                                isPaused = false;
-                                ApplyDifficulty();
-                                ResetGame();
-                                pendingUnlockAnimation = savedUnlock;
-                            }
-                            else
-                            {
-                                ResetGame();
-                                ApplyDifficulty();
-                                pendingUnlockAnimation = savedUnlock;
-                                ShowMainMenu();
-                            }
-                        }
+                            HandlePlayerDeath();
                     }
                 }
                 if (bossHitCooldown > 0)
@@ -923,11 +924,10 @@ namespace gamething
                     if (enemySpawnTimer >= enemySpawnRate)
                     {
                         if (isPaused) return;
-                        Random rng = new Random();
-                        bool newCanShoot = new Random().NextDouble() < shootingEnemyChance;
-                        bool newIsTank = !newCanShoot && new Random().NextDouble() < tankEnemyChance;
-                        bool newIsRunner = !newCanShoot && !newIsTank && new Random().NextDouble() < runnerEnemyChance;
-                        bool newIsParasitic = new Random().NextDouble() < parasiticEnemyChance;
+                        bool newCanShoot = rng.NextDouble() < shootingEnemyChance;
+                        bool newIsTank = !newCanShoot && rng.NextDouble() < tankEnemyChance;
+                        bool newIsRunner = !newCanShoot && !newIsTank && rng.NextDouble() < runnerEnemyChance;
+                        bool newIsParasitic = rng.NextDouble() < parasiticEnemyChance;
                         enemies.Add((rng.Next(0, ClientSize.Width), 0f));
                         enemyAlive.Add(true);
                         enemyRespawnTimers.Add(0f);
@@ -1019,30 +1019,7 @@ namespace gamething
                             if (thorns)
                                 DamageEnemy(i, 1f);
                             if (health <= 0)
-                            {
-                                health = 0;
-                                isPaused = true;
-                                ResetEnemies();
-                                enemySpawnTimer = 0f;
-                                parasites.Clear();
-                                bool retry = ShowDeathScreen();
-                                lastTick = DateTime.Now;
-                                int savedUnlock = pendingUnlockAnimation;
-                                if (retry)
-                                {
-                                    isPaused = false;
-                                    ResetGame();
-                                    ApplyDifficulty();
-                                    pendingUnlockAnimation = savedUnlock;
-                                }
-                                else
-                                {
-                                    ResetGame();
-                                    ApplyDifficulty();
-                                    pendingUnlockAnimation = savedUnlock;
-                                    ShowMainMenu();
-                                }
-                            }
+                                HandlePlayerDeath();
                         }
                     }
                     if (i < enemyCanShoot.Count && enemyCanShoot[i])
@@ -1130,7 +1107,7 @@ namespace gamething
                     // Frenzied - erratic movement
                     if (enemyIsFrenzied[i])
                     {
-                        enemyFrenziedAngle[i] += (float)(new Random().NextDouble() * 2 - 1) * 5f * deltaTime;
+                        enemyFrenziedAngle[i] += (float)(rng.NextDouble() * 2 - 1) * 5f * deltaTime;
                         float fDirX = (float)Math.Cos(enemyFrenziedAngle[i]);
                         float fDirY = (float)Math.Sin(enemyFrenziedAngle[i]);
                         float blend = 0.6f;
@@ -1251,16 +1228,7 @@ namespace gamething
                         {
                             health -= 0.5f * deltaTime;
                             if (health <= 0)
-                            {
-                                health = 0;
-                                isPaused = true;
-                                ResetEnemies();
-                                enemySpawnTimer = 0f;
-                                bool retry = ShowDeathScreen();
-                                lastTick = DateTime.Now;
-                                if (retry) { isPaused = false; ApplyDifficulty(); ResetGame(); }
-                                else { ResetGame(); ApplyDifficulty(); ShowMainMenu(); }
-                            }
+                                HandlePlayerDeath();
                         }
                     }
                     newTrails.Add((t.x, t.y, newTimer));
@@ -1301,11 +1269,10 @@ namespace gamething
                         enemyRespawnTimers[i] -= deltaTime;
                     if (enemyRespawnTimers[i] <= 0 && !bossAlive)
                     {
-                        Random rng = new Random();
-                        bool respawnCanShoot = new Random().NextDouble() < shootingEnemyChance;
-                        bool respawnIsTank = !respawnCanShoot && new Random().NextDouble() < tankEnemyChance;
-                        bool respawnIsRunner = !respawnCanShoot && !respawnIsTank && new Random().NextDouble() < runnerEnemyChance;
-                        bool respawnIsParasitic = new Random().NextDouble() < parasiticEnemyChance;
+                        bool respawnCanShoot = rng.NextDouble() < shootingEnemyChance;
+                        bool respawnIsTank = !respawnCanShoot && rng.NextDouble() < tankEnemyChance;
+                        bool respawnIsRunner = !respawnCanShoot && !respawnIsTank && rng.NextDouble() < runnerEnemyChance;
+                        bool respawnIsParasitic = rng.NextDouble() < parasiticEnemyChance;
                         enemies[i] = (rng.Next(0, ClientSize.Width - boxSize), 0);
                         enemyAlive[i] = true;
                         enemyRespawnTimers[i] = 0f;
@@ -1400,64 +1367,7 @@ namespace gamething
                     bossHealth -= bulletDmg;
                     bossBulletHitCooldown = bossBulletHitCooldownTime;
                     if (bossHealth <= 0)
-                    {
-                        bossAlive = false;
-                        int waveSize = 20 + bossesDefeated * 5;
-                        Random waveRng = new Random();
-                        for (int w = 0; w < waveSize; w++)
-                        {
-                            bool wCanShoot = waveRng.NextDouble() < shootingEnemyChance;
-                            bool wIsTank = !wCanShoot && waveRng.NextDouble() < tankEnemyChance;
-                            bool wIsRunner = !wCanShoot && !wIsTank && waveRng.NextDouble() < runnerEnemyChance;
-                            bool wIsParasitic = waveRng.NextDouble() < parasiticEnemyChance;
-                            int side = waveRng.Next(4);
-                            float ex, ey;
-                            switch (side)
-                            {
-                                case 0: ex = 0; ey = waveRng.Next(0, ClientSize.Height); break;
-                                case 1: ex = ClientSize.Width; ey = waveRng.Next(0, ClientSize.Height); break;
-                                case 2: ex = waveRng.Next(0, ClientSize.Width); ey = 0; break;
-                                default: ex = waveRng.Next(0, ClientSize.Width); ey = ClientSize.Height; break;
-                            }
-                            enemies.Add((ex, ey));
-                            enemyAlive.Add(true);
-                            enemyRespawnTimers.Add(0f);
-                            enemyCanShoot.Add(wCanShoot);
-                            enemyIsTank.Add(wIsTank);
-                            enemyIsRunner.Add(wIsRunner);
-                            enemyIsParasitic.Add(wIsParasitic);
-                            enemyShootTimers.Add(0f);
-                            enemyFlameTimers.Add(0f);
-                            SyncEnemyLists();
-                            enemyHealth.Add(wIsTank ? 8f : wCanShoot ? 4f : wIsRunner ? 1f : 2f);
-                        }
-                        bossesDefeated++;
-                        bossesDefeatedOnDifficulty++;
-                        currentBossMaxHealth += 25f;
-                        currentBossShootRate = Math.Max(0.5f, currentBossShootRate - 0.2f);
-                        float moneyToGive = 500 * scoreMultiplier;
-                        score += (int)(scoreMultiplier);
-                        totalScore += (int)(scoreMultiplier);
-                        health = maxHealth;
-                        totalKills++;
-                        for (int c = 0; c < 10; c++)
-                            coins.Add((bossX + bossSize * scale / 2, bossY + bossSize * scale / 2, 0f, 0f));
-                        buffMessage = "💀 BOSS DEFEATED! +$" + moneyToGive + " "  + maxHealth + "hp";
-                        buffMessageTimer = 3f;
-                        bossShootTimer = 0f;
-                        if (!sandboxMode)
-                            if (difficulty == 0) { difficultyUnlocked_Normal = true; pendingUnlockAnimation = 1; }
-                            else if (difficulty == 1) { difficultyUnlocked_Hard = true; pendingUnlockAnimation = 2; }
-                            else if (difficulty == 2) { difficultyUnlocked_Nightmare = true; pendingUnlockAnimation = 3; }
-                        SaveDifficultyUnlocks();
-                        if (difficulty > highestUnlockedDifficulty)
-                            highestUnlockedDifficulty = difficulty;
-                        for (int r = 0; r < enemyRespawnTimers.Count; r++)
-                        {
-                            if (enemyRespawnTimers[r] > 0)
-                                enemyRespawnTimers[r] = Math.Min(enemyRespawnTimers[r], 3f);
-                        }
-                    }
+                        HandleBossDefeated();
                     if (!piercingBullets) continue;
                 }
                 if (bossBulletHitCooldown > 0)
@@ -1472,7 +1382,6 @@ namespace gamething
                     {
                         float bulletDmg = (explosiveFinish && nextBulletIsLast) ? 3f : 1f;
                         if (lastStand && health <= 15f) bulletDmg *= 2f;
-                        Random rng = new Random();
                         if (rng.NextDouble() >= enemyReinforceChance)
                             DamageEnemy(i, bulletDmg);
                         if (ricochetExplosion && bounces > 0)
@@ -1535,30 +1444,7 @@ namespace gamething
                         health -= enemyDamage * 0.5f;
                         newHitCooldown = 0.5f;
                         if (health <= 0)
-                        {
-                            health = 0;
-                            isPaused = true;
-                            ResetEnemies();
-                            enemySpawnTimer = 0f;
-                            parasites.Clear();
-                            bool retry = ShowDeathScreen();
-                            lastTick = DateTime.Now;
-                            int savedUnlock = pendingUnlockAnimation;
-                            if (retry)
-                            {
-                                isPaused = false;
-                                ResetGame();
-                                ApplyDifficulty();
-                                pendingUnlockAnimation = savedUnlock;
-                            }
-                            else
-                            {
-                                ResetGame();
-                                ApplyDifficulty();
-                                pendingUnlockAnimation = savedUnlock;
-                                ShowMainMenu();
-                            }
-                        }
+                            HandlePlayerDeath();
                     }
                     newParasites.Add((newX, newY, newVelX, newVelY, newTimer, newDelay, newHitCooldown));
                     continue;
@@ -1567,8 +1453,6 @@ namespace gamething
                 newParasites.Add((newX, newY, newVelX, newVelY, newTimer, newDelay, newHitCooldown));
             }
             parasites = newParasites;
-            if (parasites.Count > 0)
-                System.Diagnostics.Debug.WriteLine($"Parasites alive: {parasites.Count}, first: x={parasites[0].x:F0} y={parasites[0].y:F0} timer={parasites[0].timer:F2} delay={parasites[0].spawnDelay:F2}");
             var newEnemyBullets = new List<(float x, float y, float velX, float velY)>();
             foreach (var b in enemyBullets)
             {
@@ -1591,30 +1475,7 @@ namespace gamething
                             ammo = Math.Min(ammo + 5, maxAmmo);
                         hitCooldown = hitCooldownTime;
                         if (health <= 0)
-                        {
-                            health = 0;
-                            isPaused = true;
-                            ResetEnemies();
-                            enemySpawnTimer = 0f;
-                            parasites.Clear();
-                            bool retry = ShowDeathScreen();
-                            lastTick = DateTime.Now;
-                            int savedUnlock = pendingUnlockAnimation;
-                            if (retry)
-                            {
-                                isPaused = false;
-                                ResetGame();
-                                ApplyDifficulty();
-                                pendingUnlockAnimation = savedUnlock;
-                            }
-                            else
-                            {
-                                ResetGame();
-                                ApplyDifficulty();
-                                pendingUnlockAnimation = savedUnlock;
-                                ShowMainMenu();
-                            }
-                        }
+                            HandlePlayerDeath();
                     }
                     continue;
                 }
@@ -1717,63 +1578,7 @@ namespace gamething
                         bossHealth -= 1f;
                         bossOrbitHitCooldown = bossOrbitHitCooldownTime;
                         if (bossHealth <= 0)
-                        {
-                            bossAlive = false;
-                            int waveSize = 20 + bossesDefeated * 5;
-                            Random waveRng = new Random();
-                            for (int w = 0; w < waveSize; w++)
-                            {
-                                bool wCanShoot = waveRng.NextDouble() < shootingEnemyChance;
-                                bool wIsTank = !wCanShoot && waveRng.NextDouble() < tankEnemyChance;
-                                bool wIsRunner = !wCanShoot && !wIsTank && waveRng.NextDouble() < runnerEnemyChance;
-                                bool wIsParasitic = waveRng.NextDouble() < parasiticEnemyChance;
-                                int side = waveRng.Next(4);
-                                float ex, ey;
-                                switch (side)
-                                {
-                                    case 0: ex = 0; ey = waveRng.Next(0, ClientSize.Height); break;
-                                    case 1: ex = ClientSize.Width; ey = waveRng.Next(0, ClientSize.Height); break;
-                                    case 2: ex = waveRng.Next(0, ClientSize.Width); ey = 0; break;
-                                    default: ex = waveRng.Next(0, ClientSize.Width); ey = ClientSize.Height; break;
-                                }
-                                enemies.Add((ex, ey));
-                                enemyAlive.Add(true);
-                                enemyRespawnTimers.Add(0f);
-                                enemyCanShoot.Add(wCanShoot);
-                                enemyIsTank.Add(wIsTank);
-                                enemyIsRunner.Add(wIsRunner);
-                                enemyIsParasitic.Add(wIsParasitic);
-                                enemyShootTimers.Add(0f);
-                                enemyFlameTimers.Add(0f);
-                                enemyHealth.Add(wIsTank ? 8f : wCanShoot ? 4f : wIsRunner ? 1f : 2f);
-                            }
-                            bossesDefeated++;
-                            bossesDefeatedOnDifficulty++;
-                            currentBossMaxHealth += 25f;
-                            currentBossShootRate = Math.Max(0.5f, currentBossShootRate - 0.2f);
-                            float moneyToGive = 500 * scoreMultiplier;
-                            score += (int)(scoreMultiplier);
-                            totalScore += (int)(scoreMultiplier);
-                            health = maxHealth;
-                            totalKills++;
-                            for (int c = 0; c < 10; c++)
-                                coins.Add((bossX + bossSize * scale / 2, bossY + bossSize * scale / 2, 0f, 0f));
-                            buffMessage = "💀 BOSS DEFEATED! +$" + moneyToGive + " " + maxHealth + "hp";
-                            buffMessageTimer = 3f;
-                            bossShootTimer = 0f;
-                            if (!sandboxMode)
-                                if (difficulty == 0) { difficultyUnlocked_Normal = true; pendingUnlockAnimation = 1; }
-                                else if (difficulty == 1) { difficultyUnlocked_Hard = true; pendingUnlockAnimation = 2; }
-                                else if (difficulty == 2) { difficultyUnlocked_Nightmare = true; pendingUnlockAnimation = 3; }
-                            SaveDifficultyUnlocks();
-                            if (difficulty > highestUnlockedDifficulty)
-                                highestUnlockedDifficulty = difficulty;
-                            for (int r = 0; r < enemyRespawnTimers.Count; r++)
-                            {
-                                if (enemyRespawnTimers[r] > 0)
-                                    enemyRespawnTimers[r] = Math.Min(enemyRespawnTimers[r], 3f);
-                            }
-                        }
+                            HandleBossDefeated();
                     }
                 }
             }
@@ -2144,16 +1949,6 @@ namespace gamething
             Brush barTextBrush = Brushes.Black;
             String Ufont = "Arial";
 
-            // Corrupted trails
-            foreach (var t in corruptedTrails)
-            {
-                float alpha = t.timer / 2f;
-                int a = (int)(alpha * 150);
-                int tSize = (int)(boxSize * 0.6f);
-                e.Graphics.FillEllipse(
-                    new SolidBrush(Color.FromArgb(a, 80, 0, 150)),
-                    t.x - tSize / 2, t.y - tSize / 2, tSize, tSize);
-            }
             if (speedTrapActive)
             {
                 float alpha = speedTrapTimer / speedTrapDuration;
@@ -2185,7 +1980,7 @@ namespace gamething
                 e.Graphics.FillRectangle(Brushes.DarkRed, bossX, bossY - 14, bossBarW, bossBarH);
                 e.Graphics.FillRectangle(Brushes.Red, bossX, bossY - 14, bossBarW * bossHpFill, bossBarH);
                 e.Graphics.DrawRectangle(borderPen, bossX, bossY - 14, bossBarW, bossBarH);
-                e.Graphics.DrawString("BOSS", new Font(Ufont, 10 * scaleY, FontStyle.Bold), Brushes.Red, bossX + scaledBossSize / 2 - 20, bossY - 30);
+                e.Graphics.DrawString("BOSS", GetFontUIBold(), Brushes.Red, bossX + scaledBossSize / 2 - 20, bossY - 30);
 
                 // Boss timer bar at top of screen
                 int bossBarWidth = (int)(400 * scaleX);
@@ -2195,7 +1990,7 @@ namespace gamething
                 e.Graphics.FillRectangle(Brushes.DarkRed, bossBarX, bossBarY, bossBarWidth, bossBarHeight);
                 e.Graphics.FillRectangle(Brushes.Red, bossBarX, bossBarY, (int)(bossBarWidth * bossHpFill), bossBarHeight);
                 e.Graphics.DrawRectangle(borderPen, bossBarX, bossBarY, bossBarWidth, bossBarHeight);
-                e.Graphics.DrawString("BOSS HP: " + (int)bossHealth + " / " + (int)currentBossMaxHealth, new Font(Ufont, 10 * scaleY, FontStyle.Bold), barTextBrush, bossBarX + bossBarWidth / 2 - 60, bossBarY);
+                e.Graphics.DrawString("BOSS HP: " + (int)bossHealth + " / " + (int)currentBossMaxHealth, GetFontUIBold(), barTextBrush, bossBarX + bossBarWidth / 2 - 60, bossBarY);
             }
             else if (gameStartTimer > gameStartDelay)
             {
@@ -2209,7 +2004,7 @@ namespace gamething
                 e.Graphics.FillRectangle(Brushes.Gray, bossBarX, bossBarY, bossBarWidth, bossBarHeight);
                 e.Graphics.FillRectangle(Brushes.DarkRed, bossBarX, bossBarY, (int)(bossBarWidth * fill), bossBarHeight);
                 e.Graphics.DrawRectangle(borderPen, bossBarX, bossBarY, bossBarWidth, bossBarHeight);
-                e.Graphics.DrawString("BOSS IN: " + (int)(bossSpawnInterval_Current - bossSpawnTimer) + "s", new Font(Ufont, 10 * scaleY, FontStyle.Bold), barTextBrush, bossBarX + bossBarWidth / 2 - 40, bossBarY);
+                e.Graphics.DrawString("BOSS IN: " + (int)(bossSpawnInterval_Current - bossSpawnTimer) + "s", GetFontUIBold(), barTextBrush, bossBarX + bossBarWidth / 2 - 40, bossBarY);
             }
 
             e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
@@ -2412,7 +2207,6 @@ namespace gamething
                 float alpha = Math.Min(1f, p.timer / parasiteDuration);
                 int a = (int)(alpha * 255);
                 int pSize = Math.Max(15, (int)(parasiteSize * scale));
-                System.Diagnostics.Debug.WriteLine($"Drawing parasite at x={p.x:F0} y={p.y:F0} pSize={pSize}");
                 e.Graphics.FillEllipse(
                     new SolidBrush(Color.FromArgb(a, 180, 0, 220)),
                     p.x - pSize / 2, p.y - pSize / 2, pSize, pSize);
@@ -2477,7 +2271,7 @@ namespace gamething
             if (isPaused)
             {
                 e.Graphics.DrawString("Game Paused", new Font(Ufont, 32 * scaleY), textBrush, ClientSize.Width / 2 - 120, ClientSize.Height / 2 - 20);
-                e.Graphics.DrawString("Press ESC", new Font(Ufont, 10 * scaleY), textBrush, ClientSize.Width / 2 - 15, ClientSize.Height / 2 + 20);
+                e.Graphics.DrawString("Press ESC", GetFontUI(), textBrush, ClientSize.Width / 2 - 15, ClientSize.Height / 2 + 20);
             }
 
             foreach (var w in walls)
@@ -2492,18 +2286,18 @@ namespace gamething
             {
                 float fill = superTimer / superDuration;
                 e.Graphics.FillRectangle(Brushes.Cyan, barX, barY, (int)(barWidth * fill), barHeight);
-                e.Graphics.DrawString("SUPER ACTIVE", new Font(Ufont, 10 * scaleY), barTextBrush, barX + 50, barY);
+                e.Graphics.DrawString("SUPER ACTIVE", GetFontUI(), barTextBrush, barX + 50, barY);
             }
             else if (superCooldown > 0)
             {
                 float fill = 1f - (superCooldown / superCooldownTime);
                 e.Graphics.FillRectangle(Brushes.DarkCyan, barX, barY, (int)(barWidth * fill), barHeight);
-                e.Graphics.DrawString("Q: " + (int)superCooldown + "s", new Font(Ufont, 10 * scaleY), barTextBrush, barX + 70, barY);
+                e.Graphics.DrawString("Q: " + (int)superCooldown + "s", GetFontUI(), barTextBrush, barX + 70, barY);
             }
             else
             {
                 e.Graphics.FillRectangle(Brushes.Cyan, barX, barY, barWidth, barHeight);
-                e.Graphics.DrawString("Q: READY", new Font(Ufont, 10 * scaleY), barTextBrush, barX + 65, barY);
+                e.Graphics.DrawString("Q: READY", GetFontUI(), barTextBrush, barX + 65, barY);
             }
             e.Graphics.DrawRectangle(borderPen, barX, barY, barWidth, barHeight);
 
@@ -2516,18 +2310,18 @@ namespace gamething
             {
                 float fill = wallTimer / wallDuration;
                 e.Graphics.FillRectangle(Brushes.Orange, wallBarX, wallBarY, (int)(wallBarWidth * fill), wallBarHeight);
-                e.Graphics.DrawString("WALL: " + (int)wallTimer + "s", new Font(Ufont, 10 * scaleY), barTextBrush, wallBarX + 60, wallBarY);
+                e.Graphics.DrawString("WALL: " + (int)wallTimer + "s", GetFontUI(), barTextBrush, wallBarX + 60, wallBarY);
             }
             else if (wallCooldown > 0)
             {
                 float fill = 1f - (wallCooldown / wallCooldownTime);
                 e.Graphics.FillRectangle(Brushes.DarkOrange, wallBarX, wallBarY, (int)(wallBarWidth * fill), wallBarHeight);
-                e.Graphics.DrawString("E: " + (int)wallCooldown + "s", new Font(Ufont, 10 * scaleY), barTextBrush, wallBarX + 70, wallBarY);
+                e.Graphics.DrawString("E: " + (int)wallCooldown + "s", GetFontUI(), barTextBrush, wallBarX + 70, wallBarY);
             }
             else
             {
                 e.Graphics.FillRectangle(Brushes.Orange, wallBarX, wallBarY, wallBarWidth, wallBarHeight);
-                e.Graphics.DrawString("E: READY", new Font(Ufont, 10 * scaleY), barTextBrush, wallBarX + 65, wallBarY);
+                e.Graphics.DrawString("E: READY", GetFontUI(), barTextBrush, wallBarX + 65, wallBarY);
             }
             e.Graphics.DrawRectangle(borderPen, wallBarX, wallBarY, wallBarWidth, wallBarHeight);
 
@@ -2567,12 +2361,12 @@ namespace gamething
                 {
                     float fill = 1f - (turretCooldown / turretCooldownTime);
                     e.Graphics.FillRectangle(Brushes.SlateGray, tBarX, tBarY, (int)(tBarWidth * fill), tBarHeight);
-                    e.Graphics.DrawString("H: " + (int)turretCooldown + "s", new Font(Ufont, 10 * scaleY), barTextBrush, tBarX + 75, tBarY);
+                    e.Graphics.DrawString("H: " + (int)turretCooldown + "s", GetFontUI(), barTextBrush, tBarX + 75, tBarY);
                 }
                 else
                 {
                     e.Graphics.FillRectangle(Brushes.SteelBlue, tBarX, tBarY, tBarWidth, tBarHeight);
-                    e.Graphics.DrawString("H: READY", new Font(Ufont, 10 * scaleY), barTextBrush, tBarX + 68, tBarY);
+                    e.Graphics.DrawString("H: READY", GetFontUI(), barTextBrush, tBarX + 68, tBarY);
                 }
                 e.Graphics.DrawRectangle(borderPen, tBarX, tBarY, tBarWidth, tBarHeight);
             }
@@ -2598,7 +2392,7 @@ namespace gamething
             e.Graphics.FillRectangle(Brushes.Goldenrod, hpBarX, hpBarY - 10 * scaleY, hpBarWidth + 10, hpBarHeight + (60 * scaleY));
             e.Graphics.FillRectangle(Brushes.DarkRed, hpBarX, hpBarY, hpBarWidth, hpBarHeight / 2);
             e.Graphics.FillRectangle(Brushes.Lime, hpBarX, hpBarY, (int)(hpBarWidth * hpFill), hpBarHeight / 2);
-            e.Graphics.DrawString(" " + (int)health, new Font(Ufont, 10 * scaleY), barTextBrush, hpBarX, hpBarY);
+            e.Graphics.DrawString(" " + (int)health, GetFontUI(), barTextBrush, hpBarX, hpBarY);
             e.Graphics.DrawRectangle(Pens.Black, hpBarX, hpBarY, hpBarWidth, hpBarHeight / 2);
             e.Graphics.DrawString(playerName, nameFont, barTextBrush, hpBarX + 5 / scaleX, hpBarY - 25 * scaleY);
 
@@ -2620,13 +2414,13 @@ namespace gamething
             {
                 float fill = reloadTimer / reloadTime;
                 e.Graphics.FillRectangle(Brushes.Gold, ammoBarX, ammoBarY, (int)(ammoBarWidth * fill), ammoBarHeight);
-                e.Graphics.DrawString("RELOADING...", new Font(Ufont, 10 * scaleY), barTextBrush, ammoBarX + 50, ammoBarY);
+                e.Graphics.DrawString("RELOADING...", GetFontUI(), barTextBrush, ammoBarX + 50, ammoBarY);
             }
             else
             {
                 float fill = (float)ammo / maxAmmo;
                 e.Graphics.FillRectangle(Brushes.Yellow, ammoBarX, ammoBarY, (int)(ammoBarWidth * fill), ammoBarHeight);
-                e.Graphics.DrawString("AMMO: " + ammo, new Font(Ufont, 10 * scaleY), barTextBrush, ammoBarX + 65, ammoBarY);
+                e.Graphics.DrawString("AMMO: " + ammo, GetFontUI(), barTextBrush, ammoBarX + 65, ammoBarY);
             }
             e.Graphics.DrawRectangle(Pens.Black, ammoBarX, ammoBarY, ammoBarWidth, ammoBarHeight);
 
@@ -2639,16 +2433,16 @@ namespace gamething
             {
                 float fill = 1f - (dashCooldown / dashCooldownTime);
                 e.Graphics.FillRectangle(Brushes.Purple, dashBarX, dashBarY, (int)(dashBarWidth * fill), dashBarHeight);
-                e.Graphics.DrawString("DASH: " + dashCooldown.ToString("F1") + "s", new Font(Ufont, 10 * scaleY), barTextBrush, dashBarX + 60, dashBarY);
+                e.Graphics.DrawString("DASH: " + dashCooldown.ToString("F1") + "s", GetFontUI(), barTextBrush, dashBarX + 60, dashBarY);
             }
             else
             {
                 e.Graphics.FillRectangle(Brushes.MediumPurple, dashBarX, dashBarY, dashBarWidth, dashBarHeight);
-                e.Graphics.DrawString("DASH: READY", new Font(Ufont, 10 * scaleY), barTextBrush, dashBarX + 55, dashBarY);
+                e.Graphics.DrawString("DASH: READY", GetFontUI(), barTextBrush, dashBarX + 55, dashBarY);
             }
             e.Graphics.DrawRectangle(Pens.Black, dashBarX, dashBarY, dashBarWidth, dashBarHeight);
 
-            e.Graphics.DrawString("$: " + score, new Font(Ufont, 10 * scaleY), Brushes.Black, 22 * scaleX, (int)(90 * scaleY));
+            e.Graphics.DrawString("$: " + score, GetFontUI(), Brushes.Black, 22 * scaleX, (int)(90 * scaleY));
 
             if (blink)
             {
@@ -2661,12 +2455,12 @@ namespace gamething
                 {
                     float fill = 1f - (blinkCooldown / blinkCooldownTime);
                     e.Graphics.FillRectangle(Brushes.MediumPurple, blinkBarX, blinkBarY, (int)(blinkBarWidth * fill), blinkBarHeight);
-                    e.Graphics.DrawString("BLINK: " + (int)blinkCooldown + "s", new Font(Ufont, 10 * scaleY), barTextBrush, blinkBarX + 55, blinkBarY);
+                    e.Graphics.DrawString("BLINK: " + (int)blinkCooldown + "s", GetFontUI(), barTextBrush, blinkBarX + 55, blinkBarY);
                 }
                 else
                 {
                     e.Graphics.FillRectangle(Brushes.Purple, blinkBarX, blinkBarY, blinkBarWidth, blinkBarHeight);
-                    e.Graphics.DrawString("BLINK: READY", new Font(Ufont, 10 * scaleY), barTextBrush, blinkBarX + 50, blinkBarY);
+                    e.Graphics.DrawString("BLINK: READY", GetFontUI(), barTextBrush, blinkBarX + 50, blinkBarY);
                 }
                 e.Graphics.DrawRectangle(borderPen, blinkBarX, blinkBarY, blinkBarWidth, blinkBarHeight);
             }
@@ -2682,18 +2476,18 @@ namespace gamething
                 {
                     float fill = speedTrapTimer / speedTrapDuration;
                     e.Graphics.FillRectangle(Brushes.MediumPurple, stBarX, stBarY, (int)(stBarWidth * fill), stBarHeight);
-                    e.Graphics.DrawString("TRAP: " + speedTrapTimer.ToString("F1") + "s", new Font(Ufont, 10 * scaleY), barTextBrush, stBarX + 60, stBarY);
+                    e.Graphics.DrawString("TRAP: " + speedTrapTimer.ToString("F1") + "s", GetFontUI(), barTextBrush, stBarX + 60, stBarY);
                 }
                 else if (speedTrapCooldown > 0)
                 {
                     float fill = 1f - (speedTrapCooldown / speedTrapCooldownTime);
                     e.Graphics.FillRectangle(Brushes.Purple, stBarX, stBarY, (int)(stBarWidth * fill), stBarHeight);
-                    e.Graphics.DrawString("G: " + (int)speedTrapCooldown + "s", new Font(Ufont, 10 * scaleY), barTextBrush, stBarX + 75, stBarY);
+                    e.Graphics.DrawString("G: " + (int)speedTrapCooldown + "s", GetFontUI(), barTextBrush, stBarX + 75, stBarY);
                 }
                 else
                 {
                     e.Graphics.FillRectangle(Brushes.MediumPurple, stBarX, stBarY, stBarWidth, stBarHeight);
-                    e.Graphics.DrawString("G: READY", new Font(Ufont, 10 * scaleY), barTextBrush, stBarX + 68, stBarY);
+                    e.Graphics.DrawString("G: READY", GetFontUI(), barTextBrush, stBarX + 68, stBarY);
                 }
                 e.Graphics.DrawRectangle(borderPen, stBarX, stBarY, stBarWidth, stBarHeight);
             }
@@ -2709,18 +2503,18 @@ namespace gamething
                 {
                     float fill = decoyTimer / decoyDuration;
                     e.Graphics.FillRectangle(Brushes.LimeGreen, decoyBarX, decoyBarY, (int)(decoyBarWidth * fill), decoyBarHeight);
-                    e.Graphics.DrawString("DECOY: " + decoyTimer.ToString("F1") + "s", new Font(Ufont, 10 * scaleY), barTextBrush, decoyBarX + 55, decoyBarY);
+                    e.Graphics.DrawString("DECOY: " + decoyTimer.ToString("F1") + "s", GetFontUI(), barTextBrush, decoyBarX + 55, decoyBarY);
                 }
                 else if (decoyCooldown > 0)
                 {
                     float fill = 1f - (decoyCooldown / decoyCooldownTime);
                     e.Graphics.FillRectangle(Brushes.DarkGreen, decoyBarX, decoyBarY, (int)(decoyBarWidth * fill), decoyBarHeight);
-                    e.Graphics.DrawString("F: " + (int)decoyCooldown + "s", new Font(Ufont, 10 * scaleY), barTextBrush, decoyBarX + 75, decoyBarY);
+                    e.Graphics.DrawString("F: " + (int)decoyCooldown + "s", GetFontUI(), barTextBrush, decoyBarX + 75, decoyBarY);
                 }
                 else
                 {
                     e.Graphics.FillRectangle(Brushes.LimeGreen, decoyBarX, decoyBarY, decoyBarWidth, decoyBarHeight);
-                    e.Graphics.DrawString("F: READY", new Font(Ufont, 10 * scaleY), barTextBrush, decoyBarX + 68, decoyBarY);
+                    e.Graphics.DrawString("F: READY", GetFontUI(), barTextBrush, decoyBarX + 68, decoyBarY);
                 }
                 e.Graphics.DrawRectangle(borderPen, decoyBarX, decoyBarY, decoyBarWidth, decoyBarHeight);
             }
@@ -2886,9 +2680,9 @@ namespace gamething
             blink = false; blinkCooldown = 0f; jackpot = false;
             speed = 4.8f * scale; playerSize = (int)(30 * scale);
             piercingBullets = false; dashTrail.Clear(); scoreTimerMax = 1f;
-            enemyBuffTimer = 0f; currentEnemySpeed = 5f * scale;
+            enemyBuffTimer = 0f;
             boxSize = (int)(30 * scale); enemyReinforceChance = 0f;
-            buffMessage = ""; buffMessageTimer = 0f; enemyDamage = 1f;
+            buffMessage = ""; buffMessageTimer = 0f;
             decoy = false; decoyActive = false; decoyTimer = 0f; decoyCooldown = 0f;
             homing = false; blowback = 0; totalKills = 0; timeAlive = 0f;
             coinWorth = 10; totalScore = 0f; enemyBullets.Clear();
@@ -2936,6 +2730,7 @@ namespace gamething
             shootRate = 10f / 60f;
             currentBossMaxHealth = 100f;
             currentBossShootRate = 2f;
+            ApplyDifficulty();
         }
 
         private void ResetEnemies()
@@ -2951,12 +2746,12 @@ namespace gamething
             };
             enemyAlive = Enumerable.Repeat(true, enemies.Count).ToList();
             enemyRespawnTimers = new List<float>(new float[enemies.Count]);
-            enemyCanShoot = enemies.Select(_ => new Random().NextDouble() < shootingEnemyChance).ToList();
-            enemyIsTank = enemies.Select((_, idx) => !enemyCanShoot[idx] && new Random().NextDouble() < tankEnemyChance).ToList();
-            enemyIsRunner = enemies.Select((_, idx) => !enemyCanShoot[idx] && !enemyIsTank[idx] && new Random().NextDouble() < runnerEnemyChance).ToList();
+            enemyCanShoot = enemies.Select(_ => rng.NextDouble() < shootingEnemyChance).ToList();
+            enemyIsTank = enemies.Select((_, idx) => !enemyCanShoot[idx] && rng.NextDouble() < tankEnemyChance).ToList();
+            enemyIsRunner = enemies.Select((_, idx) => !enemyCanShoot[idx] && !enemyIsTank[idx] && rng.NextDouble() < runnerEnemyChance).ToList();
             enemyShootTimers = new List<float>(new float[enemies.Count]);
             enemyFlameTimers = new List<float>(new float[enemies.Count]);
-            enemyIsParasitic = enemies.Select(_ => new Random().NextDouble() < parasiticEnemyChance).ToList();
+            enemyIsParasitic = enemies.Select(_ => rng.NextDouble() < parasiticEnemyChance).ToList();
             parasites = new List<(float x, float y, float velX, float velY, float timer, float spawnDelay, float hitCooldown)>();
             parasites.Clear();
             enemyIsFrenzied = new List<bool>(new bool[enemies.Count]);
@@ -3617,7 +3412,6 @@ namespace gamething
             if (tankEnemyChance < maxTankEnemyChance) pool.Add(5);
             if (runnerEnemyChance < maxRunnerEnemyChance) pool.Add(6);
             if (pool.Count == 0) return;
-            Random rng = new Random();
             int chosen = pool[rng.Next(pool.Count)];
             switch (chosen)
             {
@@ -3782,7 +3576,7 @@ namespace gamething
             // Reflective - chance to reflect
             if (i < enemyIsReflective.Count && enemyIsReflective[i])
             {
-                if (new Random().NextDouble() < 0.2f)
+                if (rng.NextDouble() < 0.2f)
                 {
                     health -= damage * 0.5f;
                     hitFlashes.Add((enemies[i].x + boxSize / 2, enemies[i].y + boxSize / 2, 0.1f, 0.1f, boxSize));
@@ -3803,15 +3597,45 @@ namespace gamething
                  i < enemyCanShoot.Count && enemyCanShoot[i] ? boxSize + 8 :
                  i < enemyIsRunner.Count && enemyIsRunner[i] ? boxSize - 8 : boxSize;
             hitFlashes.Add((enemies[i].x + hFlashSize / 2, enemies[i].y + hFlashSize / 2, 0.1f, 0.1f, hFlashSize));
-            if (enemyHealth[i] <= 0)
+            bool isTank = i < enemyIsTank.Count && enemyIsTank[i];
+            bool canShoot = i < enemyCanShoot.Count && enemyCanShoot[i];
+            bool isRunner = i < enemyIsRunner.Count && enemyIsRunner[i];
+
+                if (enemyHealth[i] <= 0)
             {
+                // Bestiary tracking
+                string enemyCategory = isTank ? "Tank" : canShoot ? "Gunner" : isRunner ? "Runner" : "Normal";
+                if (beastiaryKills.ContainsKey(enemyCategory))
+                    beastiaryKills[enemyCategory]++;
+                if (i < enemyIsParasitic.Count && enemyIsParasitic[i] && beastiaryKills.ContainsKey("Parasitic"))
+                    beastiaryKills["Parasitic"]++;
+                if (i < enemyIsFrenzied.Count && enemyIsFrenzied[i] && beastiaryKills.ContainsKey("Frenzied"))
+                    beastiaryKills["Frenzied"]++;
+                if (i < enemyIsZigzag.Count && enemyIsZigzag[i] && beastiaryKills.ContainsKey("Zigzag"))
+                    beastiaryKills["Zigzag"]++;
+                if (i < enemyIsCharging.Count && enemyIsCharging[i] && beastiaryKills.ContainsKey("Charging"))
+                    beastiaryKills["Charging"]++;
+                if (i < enemyIsArmored.Count && enemyIsArmored[i] && beastiaryKills.ContainsKey("Armored"))
+                    beastiaryKills["Armored"]++;
+                if (i < enemyIsRegenerating.Count && enemyIsRegenerating[i] && beastiaryKills.ContainsKey("Regenerating"))
+                    beastiaryKills["Regenerating"]++;
+                if (i < enemyIsReflective.Count && enemyIsReflective[i] && beastiaryKills.ContainsKey("Reflective"))
+                    beastiaryKills["Reflective"]++;
+                if (i < enemyIsBerserker.Count && enemyIsBerserker[i] && beastiaryKills.ContainsKey("Berserker"))
+                    beastiaryKills["Berserker"]++;
+                if (i < enemyIsPhasing.Count && enemyIsPhasing[i] && beastiaryKills.ContainsKey("Phasing"))
+                    beastiaryKills["Phasing"]++;
+                if (i < enemyIsCorrupted.Count && enemyIsCorrupted[i] && beastiaryKills.ContainsKey("Corrupted"))
+                    beastiaryKills["Corrupted"]++;
+                beastiaryUnlocked = true;
+                SaveBeastiary();
                 float coinX = enemies[i].x + boxSize / 2;
                 float coinY = enemies[i].y + boxSize / 2;
                 int coinCount = 1;
                 if (i < enemyIsTank.Count && enemyIsTank[i]) coinCount = 3;
                 else if (i < enemyCanShoot.Count && enemyCanShoot[i]) coinCount = 2;
                 else if (i < enemyIsRunner.Count && enemyIsRunner[i]) coinCount = 1;
-                if (jackpot && new Random().Next(0, 10) == 0) coinCount *= 3;
+                if (jackpot && rng.Next(0, 10) == 0) coinCount *= 3;
                 for (int c = 0; c < coinCount; c++)
                     coins.Add((coinX, coinY, 0f, 0f));
                 if (shrapnel && canShrapnel)
@@ -3826,16 +3650,6 @@ namespace gamething
                     }
                 }
                 enemyAlive[i] = false;
-                if (i < enemyIsParasitic.Count && enemyIsParasitic[i])
-                {
-                    for (int p = 0; p < 3; p++)
-                    {
-                        float angle = (float)(p * Math.PI * 2 / 3 + new Random().NextDouble() * 0.5f);
-                        float velX = (float)Math.Cos(angle) * parasiteSpeed;
-                        float velY = (float)Math.Sin(angle) * parasiteSpeed;
-                        parasites.Add((enemies[i].x + boxSize / 2, enemies[i].y + boxSize / 2, velX, velY, parasiteDuration, 0.5f, 0f));
-                    }
-                }
                 int flashSize = enemyIsTank.Count > i && enemyIsTank[i] ? boxSize + 20 :
                 enemyCanShoot.Count > i && enemyCanShoot[i] ? boxSize + 8 :
                 enemyIsRunner.Count > i && enemyIsRunner[i] ? boxSize - 8 : boxSize;
@@ -3845,28 +3659,115 @@ namespace gamething
                 health = Math.Min(health + lifeSteal, maxHealth);
                 if (i < enemyIsParasitic.Count && enemyIsParasitic[i] && !parasiteDecayKill)
                 {
-                    System.Diagnostics.Debug.WriteLine($"SPAWNING PARASITES - parasiteDecayKill={parasiteDecayKill}, i={i}");
                     for (int p = 0; p < 3; p++)
                     {
-                        float angle = (float)(p * Math.PI * 2 / 3 + new Random().NextDouble() * 0.5f);
+                        float angle = (float)(p * Math.PI * 2 / 3 + rng.NextDouble() * 0.5f);
                         float velX = (float)Math.Cos(angle) * parasiteSpeed;
                         float velY = (float)Math.Sin(angle) * parasiteSpeed;
                         parasites.Add((enemies[i].x + boxSize / 2, enemies[i].y + boxSize / 2, velX, velY, parasiteDuration, 0.5f, 0f));
                     }
-                    System.Diagnostics.Debug.WriteLine($"Parasites list count: {parasites.Count}");
                 }
             }
         }
+
+        private void HandleBossDefeated()
+        {
+            bossAlive = false;
+            int waveSize = 20 + bossesDefeated * 5;
+            for (int w = 0; w < waveSize; w++)
+            {
+                bool wCanShoot = rng.NextDouble() < shootingEnemyChance;
+                bool wIsTank = !wCanShoot && rng.NextDouble() < tankEnemyChance;
+                bool wIsRunner = !wCanShoot && !wIsTank && rng.NextDouble() < runnerEnemyChance;
+                bool wIsParasitic = rng.NextDouble() < parasiticEnemyChance;
+                int side = rng.Next(4);
+                float ex, ey;
+                switch (side)
+                {
+                    case 0: ex = 0; ey = rng.Next(0, ClientSize.Height); break;
+                    case 1: ex = ClientSize.Width; ey = rng.Next(0, ClientSize.Height); break;
+                    case 2: ex = rng.Next(0, ClientSize.Width); ey = 0; break;
+                    default: ex = rng.Next(0, ClientSize.Width); ey = ClientSize.Height; break;
+                }
+                enemies.Add((ex, ey));
+                enemyAlive.Add(true);
+                enemyRespawnTimers.Add(0f);
+                enemyCanShoot.Add(wCanShoot);
+                enemyIsTank.Add(wIsTank);
+                enemyIsRunner.Add(wIsRunner);
+                enemyIsParasitic.Add(wIsParasitic);
+                enemyShootTimers.Add(0f);
+                enemyFlameTimers.Add(0f);
+                SyncEnemyLists();
+                enemyHealth.Add(wIsTank ? 8f : wCanShoot ? 4f : wIsRunner ? 1f : 2f);
+            }
+            bossesDefeated++;
+            bossesDefeatedOnDifficulty++;
+            currentBossMaxHealth += 25f;
+            currentBossShootRate = Math.Max(0.5f, currentBossShootRate - 0.2f);
+            float moneyToGive = 500 * scoreMultiplier;
+            score += (int)(scoreMultiplier);
+            totalScore += (int)(scoreMultiplier);
+            health = maxHealth;
+            totalKills++;
+            for (int c = 0; c < 10; c++)
+                coins.Add((bossX + bossSize * scale / 2, bossY + bossSize * scale / 2, 0f, 0f));
+            buffMessage = "💀 BOSS DEFEATED! +$" + moneyToGive + " " + maxHealth + "hp";
+            buffMessageTimer = 3f;
+            bossShootTimer = 0f;
+            if (!sandboxMode)
+            {
+                if (difficulty == 0) { difficultyUnlocked_Normal = true; pendingUnlockAnimation = 1; }
+                else if (difficulty == 1) { difficultyUnlocked_Hard = true; pendingUnlockAnimation = 2; }
+                else if (difficulty == 2) { difficultyUnlocked_Nightmare = true; pendingUnlockAnimation = 3; }
+            }
+            SaveDifficultyUnlocks();
+            if (difficulty > highestUnlockedDifficulty)
+                highestUnlockedDifficulty = difficulty;
+            for (int r = 0; r < enemyRespawnTimers.Count; r++)
+            {
+                if (enemyRespawnTimers[r] > 0)
+                    enemyRespawnTimers[r] = Math.Min(enemyRespawnTimers[r], 3f);
+            }
+        }
+
+        private void HandlePlayerDeath()
+        {
+            parasites.Clear();
+            health = 0;
+            isPaused = true;
+            ResetEnemies();
+            enemySpawnTimer = 0f;
+            runHistory.Insert(0, (totalScore, totalKills, timeAlive, difficulty, sandboxMode));
+            if (runHistory.Count > maxRunHistory) runHistory.RemoveAt(runHistory.Count - 1);
+            SaveRunHistory();
+            bool retry = ShowDeathScreen();
+            lastTick = DateTime.Now;
+            int savedUnlock = pendingUnlockAnimation;
+            if (retry)
+            {
+                isPaused = false;
+                ApplyDifficulty();
+                ResetGame();
+                pendingUnlockAnimation = savedUnlock;
+            }
+            else
+            {
+                ResetGame();
+                ApplyDifficulty();
+                pendingUnlockAnimation = savedUnlock;
+                ShowMainMenu();
+            }
+        }
+
         private void ShowMainMenu()
         {
-            System.Diagnostics.Debug.WriteLine($"ShowMainMenu called, pendingUnlockAnimation={pendingUnlockAnimation}");
             lastTick = DateTime.Now;
             onMainMenu = true;
             isPaused = true;
 
             if (pendingUnlockAnimation >= 0)
             {
-                System.Diagnostics.Debug.WriteLine($"Triggering animation for {pendingUnlockAnimation}");
                 TriggerUnlockAnimation(pendingUnlockAnimation);
                 pendingUnlockAnimation = -1;
             }
@@ -3977,6 +3878,8 @@ namespace gamething
                         backBtn3.Font = new Font("Arial", 12);
                         backBtn3.Cursor = Cursors.Hand;
 
+                      
+
                         endlessBtn.Click += (s3, e3) =>
                         {
                             sandboxMode = false;
@@ -3987,6 +3890,8 @@ namespace gamething
                             this.Controls.Remove(endlessBtn);
                             this.Controls.Remove(sandboxBtn);
                             this.Controls.Remove(backBtn3);
+                            this.Controls.Remove(menuHistoryBtn);
+                            this.Controls.Remove(menuBestiaryBtn);
                             isPaused = false;
                             ApplyDifficulty();
                             ResetGame();
@@ -4002,6 +3907,8 @@ namespace gamething
                             this.Controls.Remove(endlessBtn);
                             this.Controls.Remove(sandboxBtn);
                             this.Controls.Remove(backBtn3);
+                            this.Controls.Remove(menuHistoryBtn);
+                            this.Controls.Remove(menuBestiaryBtn);
                             isPaused = false;
                             ApplyDifficulty();
                             ResetGame();
@@ -4220,6 +4127,38 @@ namespace gamething
                 menuQuitBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 70);
                 menuPrefsBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 160);
             };
+            menuHistoryBtn = new Button();
+            menuHistoryBtn.Text = "📜 Run History";
+            // ... rest of setup
+            menuHistoryBtn.Size = new Size(250, 45);
+            menuHistoryBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 230);
+            menuHistoryBtn.BackColor = Color.FromArgb(50, 50, 70);
+            menuHistoryBtn.ForeColor = Color.White;
+            menuHistoryBtn.FlatStyle = FlatStyle.Flat;
+            menuHistoryBtn.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 100);
+            menuHistoryBtn.Font = new Font("Arial", 13, FontStyle.Bold);
+            menuHistoryBtn.Cursor = Cursors.Hand;
+            menuHistoryBtn.MouseEnter += (s, e) => menuHistoryBtn.BackColor = Color.FromArgb(70, 70, 100);
+            menuHistoryBtn.MouseLeave += (s, e) => menuHistoryBtn.BackColor = Color.FromArgb(50, 50, 70);
+            menuHistoryBtn.Click += (s, e) => ShowRunHistory();
+            this.Controls.Add(menuHistoryBtn);
+            menuHistoryBtn.BringToFront();
+
+            menuBestiaryBtn = new Button();
+            menuBestiaryBtn.Text = "📖 Bestiary";
+            menuBestiaryBtn.Size = new Size(250, 45);
+            menuBestiaryBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 285);
+            menuBestiaryBtn.BackColor = Color.FromArgb(50, 50, 70);
+            menuBestiaryBtn.ForeColor = Color.White;
+            menuBestiaryBtn.FlatStyle = FlatStyle.Flat;
+            menuBestiaryBtn.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 100);
+            menuBestiaryBtn.Font = new Font("Arial", 13, FontStyle.Bold);
+            menuBestiaryBtn.Cursor = Cursors.Hand;
+            menuBestiaryBtn.MouseEnter += (s, e) => menuBestiaryBtn.BackColor = Color.FromArgb(70, 70, 100);
+            menuBestiaryBtn.MouseLeave += (s, e) => menuBestiaryBtn.BackColor = Color.FromArgb(50, 50, 70);
+            menuBestiaryBtn.Click += (s, e) => ShowBestiary();
+            this.Controls.Add(menuBestiaryBtn);
+            menuBestiaryBtn.BringToFront();
             this.ClientSizeChanged += resizeHandler;
             menuPlayBtn.Click += (s, e) => this.ClientSizeChanged -= resizeHandler;
             menuQuitBtn.Click += (s, e) => this.ClientSizeChanged -= resizeHandler;
@@ -4331,7 +4270,9 @@ namespace gamething
             {
                 HidePauseButtons();
                 isPaused = false;
+                int savedUnlock = pendingUnlockAnimation;
                 ResetGame();
+                pendingUnlockAnimation = savedUnlock;
                 ShowMainMenu();
             };
             this.Controls.Add(pauseResumeBtn);
@@ -4360,7 +4301,6 @@ namespace gamething
             unlockAnimTimer = unlockAnimDuration;
             unlockParticles.Clear();
 
-            Random rng = new Random();
             for (int i = 0; i < 80; i++)
             {
                 float angle = (float)(rng.NextDouble() * Math.PI * 2);
@@ -4386,10 +4326,10 @@ namespace gamething
         {
             while (enemyAlive.Count < enemies.Count) enemyAlive.Add(true);
             while (enemyRespawnTimers.Count < enemies.Count) enemyRespawnTimers.Add(0f);
-            while (enemyCanShoot.Count < enemies.Count) enemyCanShoot.Add(new Random().NextDouble() < shootingEnemyChance);
+            while (enemyCanShoot.Count < enemies.Count) enemyCanShoot.Add(rng.NextDouble() < shootingEnemyChance);
             while (enemyIsTank.Count < enemies.Count) enemyIsTank.Add(false);
             while (enemyIsRunner.Count < enemies.Count) enemyIsRunner.Add(false);
-            while (enemyIsParasitic.Count < enemies.Count) enemyIsParasitic.Add(new Random().NextDouble() < parasiticEnemyChance);
+            while (enemyIsParasitic.Count < enemies.Count) enemyIsParasitic.Add(rng.NextDouble() < parasiticEnemyChance);
             while (enemyShootTimers.Count < enemies.Count) enemyShootTimers.Add(0f);
             while (enemyFlameTimers.Count < enemies.Count) enemyFlameTimers.Add(0f);
             while (enemyHealth.Count < enemies.Count) enemyHealth.Add(2f);
@@ -4420,7 +4360,7 @@ namespace gamething
             float chance = difficulty == 1 ? effectChance_Normal :
                            difficulty == 2 ? effectChance_Hard :
                            difficulty == 3 ? effectChance_Nightmare : 0f;
-            return new Random().NextDouble() < chance;
+            return rng.NextDouble() < chance;
         }
         private void InitEnemyEffects(int i)
         {
@@ -4458,11 +4398,310 @@ namespace gamething
             enemyChargeCooldown[i] = 3f;
             enemyChargeTimer[i] = 0f;
             enemyIsCharging_Active[i] = false;
-            enemyFrenziedAngle[i] = (float)(new Random().NextDouble() * Math.PI * 2);
+            enemyFrenziedAngle[i] = (float)(rng.NextDouble() * Math.PI * 2);
             enemyZigzagTimer[i] = 0f;
             enemyZigzagDirection[i] = 1f;
             enemyPhasingTimer[i] = 0f;
             enemyIsVisible[i] = true;
+        }
+        private void SaveRunHistory()
+        {
+            try
+            {
+                var lines = runHistory.Select(r =>
+                    $"{r.score}|{r.kills}|{r.time}|{r.difficulty}|{r.sandbox}");
+                File.WriteAllLines(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "history.dat"),
+                    lines);
+            }
+            catch { }
+        }
+
+        private void LoadRunHistory()
+        {
+            try
+            {
+                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "history.dat");
+                if (!File.Exists(path)) return;
+                runHistory.Clear();
+                foreach (var line in File.ReadAllLines(path))
+                {
+                    var parts = line.Split('|');
+                    if (parts.Length == 5)
+                        runHistory.Add((float.Parse(parts[0]), int.Parse(parts[1]),
+                            float.Parse(parts[2]), int.Parse(parts[3]), bool.Parse(parts[4])));
+                }
+            }
+            catch { }
+        }
+
+        private void SaveBeastiary()
+        {
+            try
+            {
+                var lines = beastiaryKills.Select(kv => $"{kv.Key}|{kv.Value}");
+                File.WriteAllLines(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bestiary.dat"),
+                    lines);
+            }
+            catch { }
+        }
+
+        private void LoadBeastiary()
+        {
+            try
+            {
+                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bestiary.dat");
+                if (!File.Exists(path)) return;
+                foreach (var line in File.ReadAllLines(path))
+                {
+                    var parts = line.Split('|');
+                    if (parts.Length == 2 && beastiaryKills.ContainsKey(parts[0]))
+                        beastiaryKills[parts[0]] = int.Parse(parts[1]);
+                }
+                beastiaryUnlocked = beastiaryKills.Values.Sum() > 0;
+            }
+            catch { }
+        }
+        private void ShowRunHistory()
+        {
+            Form histForm = new Form();
+            histForm.Text = "Run History";
+            histForm.Size = new Size(700, 500);
+            histForm.StartPosition = FormStartPosition.CenterScreen;
+            histForm.BackColor = Color.FromArgb(20, 20, 30);
+            histForm.FormBorderStyle = FormBorderStyle.FixedDialog;
+            histForm.MaximizeBox = false;
+
+            Label title = new Label();
+            title.Text = "📜 RUN HISTORY";
+            title.Font = new Font("Arial", 20, FontStyle.Bold);
+            title.ForeColor = Color.White;
+            title.TextAlign = ContentAlignment.MiddleCenter;
+            title.Size = new Size(660, 40);
+            title.Location = new Point(20, 15);
+            histForm.Controls.Add(title);
+
+            string[] diffNames = { "Easy", "Normal", "Hard", "Nightmare" };
+            Color[] diffColors = { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
+
+            if (runHistory.Count == 0)
+            {
+                Label noRuns = new Label();
+                noRuns.Text = "No runs yet. Play a game first!";
+                noRuns.Font = new Font("Arial", 14);
+                noRuns.ForeColor = Color.Gray;
+                noRuns.TextAlign = ContentAlignment.MiddleCenter;
+                noRuns.Size = new Size(660, 40);
+                noRuns.Location = new Point(20, 200);
+                histForm.Controls.Add(noRuns);
+            }
+            else
+            {
+                for (int i = 0; i < runHistory.Count; i++)
+                {
+                    var run = runHistory[i];
+                    int minutes = (int)(run.time / 60f);
+                    int seconds = (int)(run.time % 60f);
+                    int diff = Math.Max(0, Math.Min(3, run.difficulty));
+
+                    Panel row = new Panel();
+                    row.Size = new Size(650, 65);
+                    row.Location = new Point(25, 65 + i * 75);
+                    row.BackColor = i % 2 == 0 ? Color.FromArgb(30, 30, 45) : Color.FromArgb(25, 25, 38);
+                    histForm.Controls.Add(row);
+
+                    Label runNum = new Label();
+                    runNum.Text = $"#{i + 1}";
+                    runNum.Font = new Font("Arial", 14, FontStyle.Bold);
+                    runNum.ForeColor = Color.Gold;
+                    runNum.Size = new Size(40, 65);
+                    runNum.Location = new Point(10, 0);
+                    runNum.TextAlign = ContentAlignment.MiddleCenter;
+                    row.Controls.Add(runNum);
+
+                    Label diffLabel = new Label();
+                    diffLabel.Text = (run.sandbox ? "🧪 " : "") + diffNames[diff];
+                    diffLabel.Font = new Font("Arial", 12, FontStyle.Bold);
+                    diffLabel.ForeColor = run.sandbox ? Color.MediumPurple : diffColors[diff];
+                    diffLabel.Size = new Size(120, 65);
+                    diffLabel.Location = new Point(55, 0);
+                    diffLabel.TextAlign = ContentAlignment.MiddleLeft;
+                    row.Controls.Add(diffLabel);
+
+                    Label scoreLabel = new Label();
+                    scoreLabel.Text = $"💲 {run.score:F0}";
+                    scoreLabel.Font = new Font("Arial", 11);
+                    scoreLabel.ForeColor = Color.White;
+                    scoreLabel.Size = new Size(150, 65);
+                    scoreLabel.Location = new Point(180, 0);
+                    scoreLabel.TextAlign = ContentAlignment.MiddleLeft;
+                    row.Controls.Add(scoreLabel);
+
+                    Label killsLabel = new Label();
+                    killsLabel.Text = $"💀 {run.kills} kills";
+                    killsLabel.Font = new Font("Arial", 11);
+                    killsLabel.ForeColor = Color.White;
+                    killsLabel.Size = new Size(130, 65);
+                    killsLabel.Location = new Point(340, 0);
+                    killsLabel.TextAlign = ContentAlignment.MiddleLeft;
+                    row.Controls.Add(killsLabel);
+
+                    Label timeLabel = new Label();
+                    timeLabel.Text = $"⏱ {minutes:00}:{seconds:00}";
+                    timeLabel.Font = new Font("Arial", 11);
+                    timeLabel.ForeColor = Color.White;
+                    timeLabel.Size = new Size(120, 65);
+                    timeLabel.Location = new Point(480, 0);
+                    timeLabel.TextAlign = ContentAlignment.MiddleLeft;
+                    row.Controls.Add(timeLabel);
+                }
+            }
+
+            Button closeBtn = new Button();
+            closeBtn.Text = "Close";
+            closeBtn.Size = new Size(120, 35);
+            closeBtn.Location = new Point(290, 430);
+            closeBtn.BackColor = Color.FromArgb(80, 30, 30);
+            closeBtn.ForeColor = Color.White;
+            closeBtn.FlatStyle = FlatStyle.Flat;
+            closeBtn.Click += (s, e) => histForm.Close();
+            histForm.Controls.Add(closeBtn);
+
+            histForm.ShowDialog();
+        }
+        private void ShowBestiary()
+        {
+            Form bestForm = new Form();
+            bestForm.Text = "Bestiary";
+            bestForm.Size = new Size(800, 600);
+            bestForm.StartPosition = FormStartPosition.CenterScreen;
+            bestForm.BackColor = Color.FromArgb(20, 20, 30);
+            bestForm.FormBorderStyle = FormBorderStyle.FixedDialog;
+            bestForm.MaximizeBox = false;
+
+            Label title = new Label();
+            title.Text = "📖 BESTIARY";
+            title.Font = new Font("Arial", 20, FontStyle.Bold);
+            title.ForeColor = Color.White;
+            title.TextAlign = ContentAlignment.MiddleCenter;
+            title.Size = new Size(760, 40);
+            title.Location = new Point(20, 15);
+            bestForm.Controls.Add(title);
+
+            var entries = new[]
+            {
+        new { Name = "Normal",      Icon = "🟥", Color = Color.Red,         MinDiff = 0, Desc = "Basic enemy. Moves toward player.",                                          Effect = "" },
+        new { Name = "Gunner",      Icon = "🟧", Color = Color.OrangeRed,   MinDiff = 0, Desc = "Shoots bullets at the player.",                                              Effect = "" },
+        new { Name = "Tank",        Icon = "🟫", Color = Color.DarkRed,     MinDiff = 0, Desc = "High HP. Deals 3x damage on contact.",                                       Effect = "" },
+        new { Name = "Runner",      Icon = "🩷", Color = Color.HotPink,     MinDiff = 0, Desc = "Low HP. Moves 2.5x faster than normal.",                                     Effect = "" },
+        new { Name = "Parasitic",   Icon = "🟣", Color = Color.MediumPurple,MinDiff = 1, Desc = "Decays over time. Releases 3 parasites when killed by player.",              Effect = "Spawns parasites" },
+        new { Name = "Frenzied",    Icon = "🟠", Color = Color.Orange,      MinDiff = 1, Desc = "Moves erratically. Partially homes toward player.",                           Effect = "Erratic movement" },
+        new { Name = "Charging",    Icon = "🟡", Color = Color.Yellow,      MinDiff = 1, Desc = "Periodically dashes at high speed toward the player.",                       Effect = "Dash attack" },
+        new { Name = "Berserker",   Icon = "🔴", Color = Color.OrangeRed,   MinDiff = 1, Desc = "Below 50% HP: moves faster, deals 2x damage, takes less damage.",            Effect = "Enrages at 50% HP" },
+        new { Name = "Armored",     Icon = "⬜", Color = Color.Silver,      MinDiff = 2, Desc = "First hit is always blocked by armor.",                                       Effect = "Blocks first hit" },
+        new { Name = "Regenerating",Icon = "🟩", Color = Color.LimeGreen,   MinDiff = 2, Desc = "Slowly heals over time.",                                                    Effect = "Heals over time" },
+        new { Name = "Zigzag",      Icon = "🔵", Color = Color.Cyan,        MinDiff = 2, Desc = "Moves in a zigzag pattern toward player.",                                   Effect = "Zigzag movement" },
+        new { Name = "Phasing",     Icon = "👻", Color = Color.LightBlue,   MinDiff = 3, Desc = "Periodically becomes nearly invisible and untouchable.",                     Effect = "Becomes invisible" },
+        new { Name = "Reflective",  Icon = "💠", Color = Color.LightCyan,   MinDiff = 3, Desc = "20% chance to reflect bullets back at the player.",                          Effect = "Reflects bullets" },
+        new { Name = "Corrupted",   Icon = "🟪", Color = Color.MediumPurple,MinDiff = 3, Desc = "Leaves a damaging purple trail behind it.",                                  Effect = "Leaves damage trail" },
+    };
+
+            string[] diffNames = { "Easy", "Normal", "Hard", "Nightmare" };
+            Color[] diffColors = { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
+
+            Panel scrollPanel = new Panel();
+            scrollPanel.Size = new Size(750, 480);
+            scrollPanel.Location = new Point(25, 60);
+            scrollPanel.AutoScroll = true;
+            scrollPanel.BackColor = Color.FromArgb(20, 20, 30);
+            bestForm.Controls.Add(scrollPanel);
+
+            int yPos = 5;
+            for (int i = 0; i < entries.Length; i++)
+            {
+                var entry = entries[i];
+                int kills = beastiaryKills.ContainsKey(entry.Name) ? beastiaryKills[entry.Name] : 0;
+                bool discovered = kills > 0;
+                bool available = difficulty >= entry.MinDiff || kills > 0;
+
+                Panel row = new Panel();
+                row.Size = new Size(730, 60);
+                row.Location = new Point(5, yPos);
+                row.BackColor = i % 2 == 0 ? Color.FromArgb(28, 28, 42) : Color.FromArgb(22, 22, 35);
+                scrollPanel.Controls.Add(row);
+
+                // Icon/color indicator
+                Panel colorDot = new Panel();
+                colorDot.Size = new Size(20, 20);
+                colorDot.Location = new Point(10, 20);
+                colorDot.BackColor = discovered ? entry.Color : Color.FromArgb(50, 50, 50);
+                row.Controls.Add(colorDot);
+
+                // Name
+                Label nameLabel = new Label();
+                nameLabel.Text = discovered ? entry.Name : "???";
+                nameLabel.Font = new Font("Arial", 13, FontStyle.Bold);
+                nameLabel.ForeColor = discovered ? entry.Color : Color.FromArgb(60, 60, 60);
+                nameLabel.Size = new Size(130, 60);
+                nameLabel.Location = new Point(35, 0);
+                nameLabel.TextAlign = ContentAlignment.MiddleLeft;
+                row.Controls.Add(nameLabel);
+
+                // Description
+                Label descLabel = new Label();
+                descLabel.Text = discovered ? entry.Desc : "Kill this enemy to unlock its entry.";
+                descLabel.Font = new Font("Arial", 9);
+                descLabel.ForeColor = discovered ? Color.LightGray : Color.FromArgb(60, 60, 60);
+                descLabel.Size = new Size(330, 60);
+                descLabel.Location = new Point(170, 0);
+                descLabel.TextAlign = ContentAlignment.MiddleLeft;
+                row.Controls.Add(descLabel);
+
+                // Effect
+                Label effectLabel = new Label();
+                effectLabel.Text = discovered && entry.Effect != "" ? "⚡ " + entry.Effect : "";
+                effectLabel.Font = new Font("Arial", 9, FontStyle.Italic);
+                effectLabel.ForeColor = Color.Gold;
+                effectLabel.Size = new Size(150, 60);
+                effectLabel.Location = new Point(505, 0);
+                effectLabel.TextAlign = ContentAlignment.MiddleLeft;
+                row.Controls.Add(effectLabel);
+
+                // Kill count
+                Label killLabel = new Label();
+                killLabel.Text = discovered ? $"💀 {kills}" : "";
+                killLabel.Font = new Font("Arial", 11, FontStyle.Bold);
+                killLabel.ForeColor = Color.Gold;
+                killLabel.Size = new Size(80, 60);
+                killLabel.Location = new Point(640, 0);
+                killLabel.TextAlign = ContentAlignment.MiddleRight;
+                row.Controls.Add(killLabel);
+
+                // Min difficulty badge
+                Label diffBadge = new Label();
+                diffBadge.Text = diffNames[entry.MinDiff];
+                diffBadge.Font = new Font("Arial", 8);
+                diffBadge.ForeColor = diffColors[entry.MinDiff];
+                diffBadge.Size = new Size(60, 15);
+                diffBadge.Location = new Point(35, 45);
+                diffBadge.TextAlign = ContentAlignment.MiddleLeft;
+                row.Controls.Add(diffBadge);
+
+                yPos += 65;
+            }
+
+            scrollPanel.AutoScrollMinSize = new Size(730, yPos);
+
+            Button closeBtn = new Button();
+            closeBtn.Text = "Close";
+            closeBtn.Size = new Size(120, 35);
+            closeBtn.Location = new Point(340, 548);
+            closeBtn.BackColor = Color.FromArgb(80, 30, 30);
+            closeBtn.ForeColor = Color.White;
+            closeBtn.FlatStyle = FlatStyle.Flat;
+            closeBtn.Click += (s, e2) => bestForm.Close();
+            bestForm.Controls.Add(closeBtn);
+
+            bestForm.ShowDialog();
         }
 
     }
