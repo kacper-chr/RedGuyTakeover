@@ -5551,45 +5551,42 @@ namespace gamething
                 hostBtn.Enabled = false;
                 joinBtn.Enabled = false;
 
-                // Small delay to let the server fully start, then connect
+                // Delay first tick to let server start, then connect and keep polling
                 int attempts = 0;
-                System.Windows.Forms.Timer connectTimer = new() { Interval = 200 };
-                connectTimer.Tick += (s2, e2) =>
+                bool connected = false;
+                System.Windows.Forms.Timer pollTimer = new() { Interval = 50 };
+                pollTimer.Tick += (s2, e2) =>
                 {
+                    if (netManager == null) { pollTimer.Stop(); return; }
                     attempts++;
 
-                    // First tick: initiate the connection
-                    if (attempts == 1)
+                    // First tick: initiate connection
+                    if (attempts == 3 && !connected)
                     {
                         netManager.Connect("127.0.0.1");
-                        return;
                     }
 
                     netManager.PollEvents();
 
-                    if (netManager.IsConnected)
+                    if (!connected && netManager.IsConnected)
                     {
-                        connectTimer.Stop();
+                        connected = true;
                         statusLabel.Text = "Connected! Creating room...";
                         netManager.CreateRoom(playerName);
                         return;
                     }
 
-                    // Timeout after 10 seconds
-                    if (attempts > 50)
+                    // Timeout after 10 seconds if not connected
+                    if (!connected && attempts > 200)
                     {
-                        connectTimer.Stop();
+                        pollTimer.Stop();
                         statusLabel.Text = "Connection timed out. Windows Firewall may be blocking port 9050.";
                         statusLabel.ForeColor = Color.Red;
                         hostBtn.Enabled = true;
                         joinBtn.Enabled = true;
                     }
-                    else
-                    {
-                        statusLabel.Text = $"Connecting... ({attempts - 1})";
-                    }
                 };
-                connectTimer.Start();
+                pollTimer.Start();
             };
 
             joinBtn.Click += (s, e) =>
@@ -5625,31 +5622,36 @@ namespace gamething
                 joinBtn.Enabled = false;
 
                 int joinAttempts = 0;
-                System.Windows.Forms.Timer connectTimer = new() { Interval = 200 };
-                connectTimer.Tick += (s2, e2) =>
+                bool joinConnected = false;
+                System.Windows.Forms.Timer joinPollTimer = new() { Interval = 50 };
+                joinPollTimer.Tick += (s2, e2) =>
                 {
+                    if (netManager == null) { joinPollTimer.Stop(); return; }
                     joinAttempts++;
                     netManager.PollEvents();
-                    if (netManager.IsConnected)
+
+                    if (!joinConnected && netManager.IsConnected)
                     {
-                        connectTimer.Stop();
+                        joinConnected = true;
+                        statusLabel.Text = "Connected! Joining room...";
                         netManager.JoinRoom(code, playerName);
                         return;
                     }
-                    if (joinAttempts > 50)
+
+                    if (!joinConnected && joinAttempts > 200)
                     {
-                        connectTimer.Stop();
+                        joinPollTimer.Stop();
                         statusLabel.Text = "Connection timed out. Check the IP and that port 9050 is open.";
                         statusLabel.ForeColor = Color.Red;
                         hostBtn.Enabled = true;
                         joinBtn.Enabled = true;
                     }
-                    else
+                    else if (!joinConnected)
                     {
-                        statusLabel.Text = $"Connecting to {ip}... ({joinAttempts})";
+                        statusLabel.Text = $"Connecting to {ip}...";
                     }
                 };
-                connectTimer.Start();
+                joinPollTimer.Start();
             };
 
             startBtn.Click += (s, e) => StartGame(true);
