@@ -393,6 +393,102 @@ namespace gamething
 
         private Button? menuHistoryBtn = null;
         private Button? menuBestiaryBtn = null;
+        private Button? menuAchievementsBtn = null;
+
+        // --- Achievements ---
+        private HashSet<string> unlockedAchievements = new HashSet<string>();
+        private string achievementToastText = "";
+        private string achievementToastIcon = "";
+        private float achievementToastTimer = 0f;
+        private const float achievementToastDuration = 4f;
+        private int totalUpgradesPurchased = 0;
+        private int totalCoinsCollected = 0;
+        private float totalDashDistance = 0f;
+        private int totalBulletsShot = 0;
+
+        private static readonly (string id, string icon, string name, string description, string category, Func<gameForm, bool> condition)[] achievements =
+        {
+            // Kill achievements
+            ("first_blood",    "🗡",  "First Blood",       "Kill your first enemy",              "Kills",    g => g.totalKills >= 1),
+            ("serial_killer",  "💀",  "Serial Killer",     "Kill 50 enemies in one run",         "Kills",    g => g.totalKills >= 50),
+            ("mass_murderer",  "☠",   "Mass Murderer",     "Kill 200 enemies in one run",        "Kills",    g => g.totalKills >= 200),
+            ("genocide",       "🔥",  "Genocide",          "Kill 500 enemies in one run",        "Kills",    g => g.totalKills >= 500),
+            ("exterminator",   "⚡",  "Exterminator",      "Kill 1000 enemies in one run",       "Kills",    g => g.totalKills >= 1000),
+
+            // Survival achievements
+            ("survivor",       "⏱",   "Survivor",          "Survive for 1 minute",               "Survival", g => g.timeAlive >= 60f),
+            ("endurance",      "⏱",   "Endurance",         "Survive for 3 minutes",              "Survival", g => g.timeAlive >= 180f),
+            ("marathon",       "⏱",   "Marathon Runner",   "Survive for 5 minutes",              "Survival", g => g.timeAlive >= 300f),
+            ("immortal",       "👑",  "Immortal",          "Survive for 10 minutes",             "Survival", g => g.timeAlive >= 600f),
+            ("eternal",        "🌟",  "Eternal",           "Survive for 20 minutes",             "Survival", g => g.timeAlive >= 1200f),
+
+            // Boss achievements
+            ("boss_slayer",    "👹",  "Boss Slayer",       "Defeat your first boss",             "Boss",     g => g.bossesDefeated >= 1),
+            ("boss_hunter",    "👹",  "Boss Hunter",       "Defeat 3 bosses in one run",         "Boss",     g => g.bossesDefeated >= 3),
+            ("boss_master",    "👹",  "Boss Master",       "Defeat 5 bosses in one run",         "Boss",     g => g.bossesDefeated >= 5),
+            ("boss_legend",    "🏆",  "Boss Legend",       "Defeat 10 bosses in one run",        "Boss",     g => g.bossesDefeated >= 10),
+
+            // Score achievements
+            ("pocket_change",  "💲",  "Pocket Change",     "Earn $500 in one run",               "Score",    g => g.totalScore >= 500),
+            ("wealthy",        "💲",  "Wealthy",           "Earn $2,000 in one run",             "Score",    g => g.totalScore >= 2000),
+            ("rich",           "💰",  "Rich",              "Earn $5,000 in one run",             "Score",    g => g.totalScore >= 5000),
+            ("millionaire",    "💎",  "Millionaire",       "Earn $10,000 in one run",            "Score",    g => g.totalScore >= 10000),
+            ("bezos",          "🤑",  "Bezos Mode",        "Earn $50,000 in one run",            "Score",    g => g.totalScore >= 50000),
+
+            // Upgrade achievements
+            ("first_upgrade",  "⬆",   "First Upgrade",     "Buy your first upgrade",             "Upgrades", g => g.totalUpgradesPurchased >= 1),
+            ("shopaholic",     "🛒",  "Shopaholic",        "Buy 10 upgrades in one run",         "Upgrades", g => g.totalUpgradesPurchased >= 10),
+            ("maxed_out",      "🛒",  "Maxed Out",         "Buy 20 upgrades in one run",         "Upgrades", g => g.totalUpgradesPurchased >= 20),
+
+            // Ability achievements
+            ("orbit_unlocked", "🌑",  "Orbital",           "Unlock orbit bullets",               "Abilities",g => g.orbitCount >= 1),
+            ("orbit_master",   "🌑",  "Orbit Master",      "Have 5 orbit bullets",               "Abilities",g => g.orbitCount >= 5),
+            ("blink_user",     "🌀",  "Blink User",        "Unlock blink",                       "Abilities",g => g.blink),
+            ("ghost",          "👻",  "Ghost",             "Unlock ghost dash",                  "Abilities",g => g.ghostDash),
+            ("turret_placer",  "🗼",  "Engineer",          "Place a turret",                     "Abilities",g => g.turrets.Count >= 1),
+            ("piercing_user",  "🏹",  "Piercing Shot",     "Unlock piercing bullets",            "Abilities",g => g.piercingBullets),
+            ("homing_user",    "🎯",  "Lock On",           "Unlock homing bullets",              "Abilities",g => g.homing),
+
+            // Difficulty achievements
+            ("normal_unlock",  "⭐",  "Stepping Up",       "Unlock Normal difficulty and achievements",           "Difficulty",g => g.difficultyUnlocked_Normal),
+            ("hard_unlock",    "⭐",  "Getting Serious",   "Unlock Hard difficulty",             "Difficulty",g => g.difficultyUnlocked_Hard),
+            ("nightmare_unlock","💀", "Nightmare Fuel",    "Unlock Nightmare difficulty",        "Difficulty",g => g.difficultyUnlocked_Nightmare),
+            ("nightmare_boss", "🔥",  "True Champion",     "Defeat a boss on Nightmare",         "Difficulty",g => g.difficulty == 3 && g.bossesDefeatedOnDifficulty >= 1),
+
+            // Misc achievements
+            ("full_health",    "💚",  "Full Health",       "Reach max HP above 100",             "Misc",     g => g.maxHealth >= 100 && g.health >= g.maxHealth),
+            ("close_call",     "😰",  "Close Call",        "Survive with less than 1 HP",        "Misc",     g => g.health > 0 && g.health < 1f && g.timeAlive > 10f),
+            ("bullet_hell",    "🔫",  "Bullet Hell",       "Have 50+ bullets on screen",         "Misc",     g => g.bullets.Count >= 50),
+            ("coin_collector", "🪙",  "Coin Collector",    "Collect 100 coins in one run",       "Misc",     g => g.totalCoinsCollected >= 100),
+            ("coin_hoarder",   "🪙",  "Coin Hoarder",     "Collect 500 coins in one run",       "Misc",     g => g.totalCoinsCollected >= 500),
+            ("parasite_immune","🧬",  "Immune System",     "Unlock parasite immunity",           "Misc",     g => g.parasiteImmune),
+            ("super_active",   "⚡",  "Super Saiyan",      "Activate Super mode",                "Misc",     g => g.superActive),
+        };
+
+        private void UnlockAchievement(string id)
+        {
+            if (difficulty < 1) return; // Only unlock on Normal (1) or higher
+            if (unlockedAchievements.Contains(id)) return;
+            unlockedAchievements.Add(id);
+            SaveAchievements();
+            var ach = achievements.FirstOrDefault(a => a.id == id);
+            if (ach.id != null)
+            {
+                achievementToastText = ach.name;
+                achievementToastIcon = ach.icon;
+                achievementToastTimer = achievementToastDuration;
+            }
+        }
+
+        private void CheckAchievements()
+        {
+            foreach (var ach in achievements)
+            {
+                if (!unlockedAchievements.Contains(ach.id) && ach.condition(this))
+                    UnlockAchievement(ach.id);
+            }
+        }
+
         public gameForm()
         {
             InitializeComponent();
@@ -415,6 +511,7 @@ namespace gamething
                 ShowMainMenu();
                 LoadRunHistory();
                 LoadBeastiary();
+                LoadAchievements();
             };
             enemyRespawnTimers = new List<float>(new float[enemies.Count]);
             enemyAlive = Enumerable.Repeat(true, enemies.Count).ToList();
@@ -1501,6 +1598,7 @@ namespace gamething
                 {
                     score += coinWorth;
                     totalScore += coinWorth;
+                    totalCoinsCollected++;
                     if (medic) health = Math.Min(health + 0.5f, maxHealth);
                 }
                 else
@@ -1647,6 +1745,10 @@ namespace gamething
                     newHitFlashes.Add((f.x, f.y, newTimer, f.maxTimer, f.size));
             }
             hitFlashes = newHitFlashes;
+
+            if (achievementToastTimer > 0)
+                achievementToastTimer -= deltaTime;
+            CheckAchievements();
 
             this.Invalidate();
         }
@@ -2554,6 +2656,42 @@ namespace gamething
                     new Pen(Color.FromArgb(a, 255, 50, 50), 4),
                     2, 2, ClientSize.Width - 4, ClientSize.Height - 4);
             }
+
+            // Achievement toast
+            if (achievementToastTimer > 0)
+            {
+                float progress = achievementToastTimer / achievementToastDuration;
+                float slideIn = Math.Min(1f, (achievementToastDuration - achievementToastTimer) / 0.3f);
+                float fadeOut = Math.Min(1f, achievementToastTimer / 0.5f);
+                float alpha = Math.Min(slideIn, fadeOut);
+                int toastW = (int)(320 * scaleX);
+                int toastH = (int)(60 * scaleY);
+                int toastX = ClientSize.Width - toastW - (int)(20 * scaleX);
+                int targetY = (int)(20 * scaleY);
+                int toastY = targetY - (int)((1f - slideIn) * 80 * scaleY);
+                int a = (int)(alpha * 230);
+                int aText = (int)(alpha * 255);
+
+                e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(a, 20, 20, 35)),
+                    toastX, toastY, toastW, toastH);
+                e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(a, 255, 200, 0)),
+                    toastX, toastY, 5, toastH);
+                e.Graphics.DrawRectangle(new Pen(Color.FromArgb(a, 255, 200, 0)),
+                    toastX, toastY, toastW, toastH);
+
+                e.Graphics.DrawString(achievementToastIcon,
+                    new Font("Segoe UI Emoji", 18 * scaleY),
+                    new SolidBrush(Color.FromArgb(aText, Color.White)),
+                    toastX + 10 * scaleX, toastY + 8 * scaleY);
+                e.Graphics.DrawString("ACHIEVEMENT UNLOCKED",
+                    new Font("Arial", 8 * scaleY),
+                    new SolidBrush(Color.FromArgb(aText, 255, 200, 0)),
+                    toastX + 50 * scaleX, toastY + 8 * scaleY);
+                e.Graphics.DrawString(achievementToastText,
+                    new Font("Arial", 12 * scaleY, FontStyle.Bold),
+                    new SolidBrush(Color.FromArgb(aText, Color.White)),
+                    toastX + 50 * scaleX, toastY + 28 * scaleY);
+            }
         }
 
         private void Form1_KeyUp(object? sender, KeyEventArgs e)
@@ -2625,6 +2763,7 @@ namespace gamething
 
         private void Shoot()
         {
+            totalBulletsShot++;
             float dirX = mousePos.X - (posX + playerSize / 2);
             float dirY = mousePos.Y - (posY + playerSize / 2);
             float dist = (float)Math.Sqrt(dirX * dirX + dirY * dirY);
@@ -2685,6 +2824,7 @@ namespace gamething
             buffMessage = ""; buffMessageTimer = 0f;
             decoy = false; decoyActive = false; decoyTimer = 0f; decoyCooldown = 0f;
             homing = false; blowback = 0; totalKills = 0; timeAlive = 0f;
+            totalUpgradesPurchased = 0; totalCoinsCollected = 0; totalBulletsShot = 0;
             coinWorth = 10; totalScore = 0f; enemyBullets.Clear();
             shootingEnemyChance = 0.05f; toughLove = false; orbitCount = 0; orbitAngle = 0f;
             purchasedOneTimeUpgrades.Clear();
@@ -3281,6 +3421,7 @@ namespace gamething
                     if (score < cost) return;
                     if (capturedCard.Tag is int t && t == int.MaxValue) return;
                     score -= cost;
+                    totalUpgradesPurchased++;
                     if (cashback) totalSpentSinceLastCashback += cost;
                     switch (index)
                     {
@@ -3892,6 +4033,7 @@ namespace gamething
                             this.Controls.Remove(backBtn3);
                             this.Controls.Remove(menuHistoryBtn);
                             this.Controls.Remove(menuBestiaryBtn);
+                            this.Controls.Remove(menuAchievementsBtn);
                             isPaused = false;
                             ApplyDifficulty();
                             ResetGame();
@@ -3909,6 +4051,7 @@ namespace gamething
                             this.Controls.Remove(backBtn3);
                             this.Controls.Remove(menuHistoryBtn);
                             this.Controls.Remove(menuBestiaryBtn);
+                            this.Controls.Remove(menuAchievementsBtn);
                             isPaused = false;
                             ApplyDifficulty();
                             ResetGame();
@@ -4159,6 +4302,22 @@ namespace gamething
             menuBestiaryBtn.Click += (s, e) => ShowBestiary();
             this.Controls.Add(menuBestiaryBtn);
             menuBestiaryBtn.BringToFront();
+
+            menuAchievementsBtn = new Button();
+            menuAchievementsBtn.Text = "🏆 Achievements";
+            menuAchievementsBtn.Size = new Size(250, 45);
+            menuAchievementsBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 340);
+            menuAchievementsBtn.BackColor = Color.FromArgb(50, 50, 70);
+            menuAchievementsBtn.ForeColor = Color.White;
+            menuAchievementsBtn.FlatStyle = FlatStyle.Flat;
+            menuAchievementsBtn.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 100);
+            menuAchievementsBtn.Font = new Font("Arial", 13, FontStyle.Bold);
+            menuAchievementsBtn.Cursor = Cursors.Hand;
+            menuAchievementsBtn.MouseEnter += (s, e) => menuAchievementsBtn.BackColor = Color.FromArgb(70, 70, 100);
+            menuAchievementsBtn.MouseLeave += (s, e) => menuAchievementsBtn.BackColor = Color.FromArgb(50, 50, 70);
+            menuAchievementsBtn.Click += (s, e) => ShowAchievements();
+            this.Controls.Add(menuAchievementsBtn);
+            menuAchievementsBtn.BringToFront();
             this.ClientSizeChanged += resizeHandler;
             menuPlayBtn.Click += (s, e) => this.ClientSizeChanged -= resizeHandler;
             menuQuitBtn.Click += (s, e) => this.ClientSizeChanged -= resizeHandler;
@@ -4461,6 +4620,33 @@ namespace gamething
             }
             catch { }
         }
+
+        private void SaveAchievements()
+        {
+            try
+            {
+                File.WriteAllLines(
+                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "achievements.dat"),
+                    unlockedAchievements);
+            }
+            catch { }
+        }
+
+        private void LoadAchievements()
+        {
+            try
+            {
+                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "achievements.dat");
+                if (!File.Exists(path)) return;
+                foreach (var line in File.ReadAllLines(path))
+                {
+                    if (!string.IsNullOrWhiteSpace(line))
+                        unlockedAchievements.Add(line.Trim());
+                }
+            }
+            catch { }
+        }
+
         private void ShowRunHistory()
         {
             Form histForm = new Form();
@@ -4702,6 +4888,129 @@ namespace gamething
             bestForm.Controls.Add(closeBtn);
 
             bestForm.ShowDialog();
+        }
+
+        private void ShowAchievements()
+        {
+            Form achForm = new Form();
+            achForm.Text = "Achievements";
+            achForm.Size = new Size(750, 600);
+            achForm.StartPosition = FormStartPosition.CenterScreen;
+            achForm.BackColor = Color.FromArgb(20, 20, 30);
+            achForm.FormBorderStyle = FormBorderStyle.FixedDialog;
+            achForm.MaximizeBox = false;
+
+            Label title = new Label();
+            title.Text = $"🏆 ACHIEVEMENTS ({unlockedAchievements.Count}/{achievements.Length})";
+            title.Font = new Font("Arial", 16, FontStyle.Bold);
+            title.ForeColor = Color.Gold;
+            title.TextAlign = ContentAlignment.MiddleCenter;
+            title.Size = new Size(710, 40);
+            title.Location = new Point(20, 10);
+            achForm.Controls.Add(title);
+
+            Panel scrollPanel = new Panel();
+            scrollPanel.Location = new Point(10, 55);
+            scrollPanel.Size = new Size(715, 490);
+            scrollPanel.AutoScroll = true;
+            scrollPanel.BackColor = Color.FromArgb(20, 20, 30);
+            achForm.Controls.Add(scrollPanel);
+
+            string[] categories = { "Kills", "Survival", "Boss", "Score", "Upgrades", "Abilities", "Difficulty", "Misc" };
+            Color[] catColors = {
+                Color.FromArgb(180, 60, 60),
+                Color.FromArgb(60, 140, 60),
+                Color.FromArgb(160, 80, 40),
+                Color.FromArgb(60, 120, 180),
+                Color.FromArgb(140, 100, 40),
+                Color.FromArgb(100, 60, 160),
+                Color.FromArgb(160, 160, 40),
+                Color.FromArgb(100, 100, 120)
+            };
+
+            int yPos = 5;
+            for (int c = 0; c < categories.Length; c++)
+            {
+                string cat = categories[c];
+                var catAchs = achievements.Where(a => a.category == cat).ToArray();
+                if (catAchs.Length == 0) continue;
+
+                int catUnlocked = catAchs.Count(a => unlockedAchievements.Contains(a.id));
+
+                Label catLabel = new Label();
+                catLabel.Text = $"  {cat.ToUpper()} ({catUnlocked}/{catAchs.Length})";
+                catLabel.Font = new Font("Arial", 12, FontStyle.Bold);
+                catLabel.ForeColor = catColors[c];
+                catLabel.BackColor = Color.FromArgb(30, 30, 45);
+                catLabel.Size = new Size(680, 30);
+                catLabel.Location = new Point(5, yPos);
+                catLabel.TextAlign = ContentAlignment.MiddleLeft;
+                scrollPanel.Controls.Add(catLabel);
+                yPos += 35;
+
+                for (int i = 0; i < catAchs.Length; i++)
+                {
+                    var ach = catAchs[i];
+                    bool unlocked = unlockedAchievements.Contains(ach.id);
+
+                    Panel row = new Panel();
+                    row.Size = new Size(680, 45);
+                    row.Location = new Point(5, yPos);
+                    row.BackColor = unlocked ? Color.FromArgb(35, 45, 35) : Color.FromArgb(25, 25, 30);
+                    scrollPanel.Controls.Add(row);
+
+                    Label iconLabel = new Label();
+                    iconLabel.Text = unlocked ? ach.icon : "🔒";
+                    iconLabel.Font = new Font("Segoe UI Emoji", 16);
+                    iconLabel.Size = new Size(40, 45);
+                    iconLabel.Location = new Point(5, 0);
+                    iconLabel.TextAlign = ContentAlignment.MiddleCenter;
+                    row.Controls.Add(iconLabel);
+
+                    Label nameLabel = new Label();
+                    nameLabel.Text = unlocked ? ach.name : "???";
+                    nameLabel.Font = new Font("Arial", 12, FontStyle.Bold);
+                    nameLabel.ForeColor = unlocked ? Color.White : Color.FromArgb(80, 80, 80);
+                    nameLabel.Size = new Size(200, 45);
+                    nameLabel.Location = new Point(50, 0);
+                    nameLabel.TextAlign = ContentAlignment.MiddleLeft;
+                    row.Controls.Add(nameLabel);
+
+                    Label descLabel = new Label();
+                    descLabel.Text = ach.description;
+                    descLabel.Font = new Font("Arial", 10);
+                    descLabel.ForeColor = unlocked ? Color.FromArgb(180, 200, 180) : Color.FromArgb(60, 60, 60);
+                    descLabel.Size = new Size(380, 45);
+                    descLabel.Location = new Point(255, 0);
+                    descLabel.TextAlign = ContentAlignment.MiddleLeft;
+                    row.Controls.Add(descLabel);
+
+                    Label statusLabel = new Label();
+                    statusLabel.Text = unlocked ? "✔" : "✗";
+                    statusLabel.Font = new Font("Arial", 14, FontStyle.Bold);
+                    statusLabel.ForeColor = unlocked ? Color.LimeGreen : Color.FromArgb(60, 30, 30);
+                    statusLabel.Size = new Size(35, 45);
+                    statusLabel.Location = new Point(640, 0);
+                    statusLabel.TextAlign = ContentAlignment.MiddleCenter;
+                    row.Controls.Add(statusLabel);
+
+                    yPos += 50;
+                }
+                yPos += 10;
+            }
+
+            Button closeBtn = new Button();
+            closeBtn.Text = "Close";
+            closeBtn.Size = new Size(120, 35);
+            closeBtn.Location = new Point(315, 550);
+            closeBtn.BackColor = Color.FromArgb(80, 30, 30);
+            closeBtn.ForeColor = Color.White;
+            closeBtn.FlatStyle = FlatStyle.Flat;
+            closeBtn.Font = new Font("Arial", 11, FontStyle.Bold);
+            closeBtn.Click += (s, e2) => achForm.Close();
+            achForm.Controls.Add(closeBtn);
+
+            achForm.ShowDialog();
         }
 
     }
