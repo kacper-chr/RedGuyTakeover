@@ -536,6 +536,7 @@ namespace gamething
                 LoadRunHistory();
                 LoadBeastiary();
                 LoadAchievements();
+                LoadPlayerName();
             };
             enemyRespawnTimers = new List<float>(new float[enemies.Count]);
             enemyAlive = Enumerable.Repeat(true, enemies.Count).ToList();
@@ -1846,18 +1847,21 @@ namespace gamething
                     }
                     else
                     {
+                        // Normalize aim coords to 0-1 so host can scale to its resolution
+                        float cw = ClientSize.Width;
+                        float ch = ClientSize.Height;
                         var input = new PlayerInputPacket
                         {
                             MoveX = velocityX,
                             MoveY = velocityY,
-                            AimX = mousePos.X,
-                            AimY = mousePos.Y,
+                            AimX = mousePos.X / cw,
+                            AimY = mousePos.Y / ch,
                             Shooting = mouseHeld,
                             Dashing = isDashing,
                             ActivateSuper = p2PendingSuper,
                             ActivateWall = p2PendingWall,
-                            WallAimX = mousePos.X,
-                            WallAimY = mousePos.Y,
+                            WallAimX = mousePos.X / cw,
+                            WallAimY = mousePos.Y / ch,
                             UpgradePurchaseIndex = p2PendingUpgrade,
                         };
                         p2PendingSuper = false;
@@ -3403,8 +3407,18 @@ namespace gamething
             nameBox.BorderStyle = BorderStyle.FixedSingle;
             nameBox.TextChanged += (s, e) =>
             {
-                string input = nameBox.Text;
-                playerName = string.IsNullOrWhiteSpace(input) ? "YOU" : input.ToUpper();
+                string input = nameBox.Text.Trim().ToUpper();
+                if (!string.IsNullOrWhiteSpace(input) && input != "YOU")
+                {
+                    playerName = input;
+                    nameBox.ForeColor = Color.White;
+                }
+                else
+                {
+                    playerName = "YOU";
+                    nameBox.ForeColor = Color.Red;
+                }
+                SavePlayerName();
             };
             colorPanel.Controls.Add(nameBox);
 
@@ -4423,7 +4437,18 @@ namespace gamething
                 nameBox.Tag = "prefControl";
                 nameBox.TextChanged += (s2, e2) =>
                 {
-                    playerName = string.IsNullOrWhiteSpace(nameBox.Text) ? "YOU" : nameBox.Text.ToUpper();
+                    string input = nameBox.Text.Trim().ToUpper();
+                    if (!string.IsNullOrWhiteSpace(input) && input != "YOU")
+                    {
+                        playerName = input;
+                        nameBox.ForeColor = Color.White;
+                    }
+                    else
+                    {
+                        playerName = "YOU";
+                        nameBox.ForeColor = Color.Red;
+                    }
+                    SavePlayerName();
                 };
                 this.Controls.Add(nameBox);
                 nameBox.BringToFront();
@@ -4587,6 +4612,27 @@ namespace gamething
             difficultyUnlocked_Normal = saveData.Contains("CRIMSON");
             difficultyUnlocked_Hard = saveData.Contains("PHANTOM");
             difficultyUnlocked_Nightmare = saveData.Contains("OBLIVION");
+        }
+
+        private void SavePlayerName()
+        {
+            try { File.WriteAllText(Path.Combine(GetSaveDir(), "playername.dat"), playerName); }
+            catch { }
+        }
+
+        private void LoadPlayerName()
+        {
+            try
+            {
+                string path = Path.Combine(GetSaveDir(), "playername.dat");
+                if (File.Exists(path))
+                {
+                    string name = File.ReadAllText(path).Trim().ToUpper();
+                    if (!string.IsNullOrWhiteSpace(name) && name != "YOU")
+                        playerName = name;
+                }
+            }
+            catch { }
         }
         private Button? pauseResumeBtn = null;
         private void ShowPauseButtons()
@@ -5213,21 +5259,25 @@ namespace gamething
         // --- Multiplayer sync helpers ---
         private GameStatePacket BuildGameStatePacket()
         {
+            // Normalize all positions to 0-1 range so different resolutions work
+            float nw = ClientSize.Width;
+            float nh = ClientSize.Height;
+
             var pkt = new GameStatePacket
             {
-                HostX = posX, HostY = posY,
+                HostX = posX / nw, HostY = posY / nh,
                 HostHealth = health, HostMaxHealth = maxHealth,
                 HostScore = score,
                 HostDashing = isDashing,
 
-                ClientX = p2X, ClientY = p2Y,
+                ClientX = p2X / nw, ClientY = p2Y / nh,
                 ClientHealth = p2Health, ClientMaxHealth = p2MaxHealth,
                 ClientDashing = p2Dashing,
 
                 TimeAlive = timeAlive,
                 TotalKills = totalKills,
                 BossActive = bossAlive,
-                BossX = bossX, BossY = bossY,
+                BossX = bossX / nw, BossY = bossY / nh,
                 BossHealth = bossHealth, BossMaxHealth = bossMaxHealth,
 
                 SuperActive = superActive,
@@ -5243,7 +5293,7 @@ namespace gamething
 
             try
             {
-                // Pack wall data
+                // Pack wall data (normalized)
                 if (wallActive)
                 {
                     if (boxWall && boxWalls.Count > 0)
@@ -5255,16 +5305,16 @@ namespace gamething
                         pkt.WallAngle = new float[wCount];
                         for (int i = 0; i < wCount; i++)
                         {
-                            pkt.WallX[i] = boxWalls[i].x; pkt.WallY[i] = boxWalls[i].y;
-                            pkt.WallWidth[i] = boxWalls[i].width; pkt.WallHeight[i] = boxWalls[i].height;
+                            pkt.WallX[i] = boxWalls[i].x / nw; pkt.WallY[i] = boxWalls[i].y / nh;
+                            pkt.WallWidth[i] = boxWalls[i].width / nw; pkt.WallHeight[i] = boxWalls[i].height / nh;
                             pkt.WallAngle[i] = boxWalls[i].angle;
                         }
                     }
                     else
                     {
                         pkt.WallCount = 1;
-                        pkt.WallX = new float[] { tempWall.x }; pkt.WallY = new float[] { tempWall.y };
-                        pkt.WallWidth = new float[] { tempWall.width }; pkt.WallHeight = new float[] { tempWall.height };
+                        pkt.WallX = new float[] { tempWall.x / nw }; pkt.WallY = new float[] { tempWall.y / nh };
+                        pkt.WallWidth = new float[] { tempWall.width / nw }; pkt.WallHeight = new float[] { tempWall.height / nh };
                         pkt.WallAngle = new float[] { tempWall.angle };
                     }
                 }
@@ -5284,8 +5334,8 @@ namespace gamething
                 pkt.EnemyType = new int[eCount];
                 for (int i = 0; i < eCount && i < enemies.Count; i++)
                 {
-                    pkt.EnemyX[i] = enemies[i].x;
-                    pkt.EnemyY[i] = enemies[i].y;
+                    pkt.EnemyX[i] = enemies[i].x / nw;
+                    pkt.EnemyY[i] = enemies[i].y / nh;
                     pkt.EnemyAlive[i] = i < enemyAlive.Count && enemyAlive[i];
                     pkt.EnemyType[i] = (i < enemyIsTank.Count && enemyIsTank[i]) ? 1 :
                                        (i < enemyCanShoot.Count && enemyCanShoot[i]) ? 2 : 0;
@@ -5297,8 +5347,8 @@ namespace gamething
                 pkt.BulletY = new float[bCount];
                 for (int i = 0; i < bCount && i < bullets.Count; i++)
                 {
-                    pkt.BulletX[i] = bullets[i].x;
-                    pkt.BulletY[i] = bullets[i].y;
+                    pkt.BulletX[i] = bullets[i].x / nw;
+                    pkt.BulletY[i] = bullets[i].y / nh;
                 }
 
                 int cCount = Math.Min(coins.Count, 50);
@@ -5307,8 +5357,8 @@ namespace gamething
                 pkt.CoinY = new float[cCount];
                 for (int i = 0; i < cCount && i < coins.Count; i++)
                 {
-                    pkt.CoinX[i] = coins[i].x;
-                    pkt.CoinY[i] = coins[i].y;
+                    pkt.CoinX[i] = coins[i].x / nw;
+                    pkt.CoinY[i] = coins[i].y / nh;
                 }
 
                 int ebCount = Math.Min(enemyBullets.Count, 100);
@@ -5317,8 +5367,8 @@ namespace gamething
                 pkt.EnemyBulletY = new float[ebCount];
                 for (int i = 0; i < ebCount && i < enemyBullets.Count; i++)
                 {
-                    pkt.EnemyBulletX[i] = enemyBullets[i].x;
-                    pkt.EnemyBulletY[i] = enemyBullets[i].y;
+                    pkt.EnemyBulletX[i] = enemyBullets[i].x / nw;
+                    pkt.EnemyBulletY[i] = enemyBullets[i].y / nh;
                 }
             }
             catch { /* list changed during iteration, skip this frame */ }
@@ -5330,16 +5380,20 @@ namespace gamething
         {
             try
             {
+                // Scale from normalized 0-1 coords to our resolution
+                float sw = ClientSize.Width;
+                float sh = ClientSize.Height;
+
                 // On client: host is "Player 2" visually, client is "me"
-                p2X = state.HostX;
-                p2Y = state.HostY;
+                p2X = state.HostX * sw;
+                p2Y = state.HostY * sh;
                 p2Health = state.HostHealth;
                 p2MaxHealth = state.HostMaxHealth;
                 p2Dashing = state.HostDashing;
                 p2Dead = state.HostDead;
 
-                posX = state.ClientX;
-                posY = state.ClientY;
+                posX = state.ClientX * sw;
+                posY = state.ClientY * sh;
                 health = state.ClientHealth;
                 maxHealth = state.ClientMaxHealth;
                 isDashing = state.ClientDashing;
@@ -5357,26 +5411,26 @@ namespace gamething
                 wallTimer = state.WallTimer;
                 boxWall = state.BoxWall;
 
-                // Sync walls
+                // Sync walls (scale from normalized)
                 if (state.WallActive && state.WallCount > 0)
                 {
                     if (state.BoxWall && state.WallCount > 1)
                     {
                         boxWalls = new List<(float x, float y, float width, float height, float angle)>(state.WallCount);
                         for (int i = 0; i < state.WallCount; i++)
-                            boxWalls.Add((state.WallX[i], state.WallY[i], state.WallWidth[i], state.WallHeight[i], state.WallAngle[i]));
+                            boxWalls.Add((state.WallX[i] * sw, state.WallY[i] * sh, state.WallWidth[i] * sw, state.WallHeight[i] * sh, state.WallAngle[i]));
                     }
                     else if (state.WallCount >= 1)
                     {
-                        tempWall = (state.WallX[0], state.WallY[0], state.WallWidth[0], state.WallHeight[0], state.WallAngle[0]);
+                        tempWall = (state.WallX[0] * sw, state.WallY[0] * sh, state.WallWidth[0] * sw, state.WallHeight[0] * sh, state.WallAngle[0]);
                     }
                 }
 
                 bossAlive = state.BossActive;
                 if (state.BossActive)
                 {
-                    bossX = state.BossX;
-                    bossY = state.BossY;
+                    bossX = state.BossX * sw;
+                    bossY = state.BossY * sh;
                     bossHealth = state.BossHealth;
                     bossMaxHealth = state.BossMaxHealth;
                 }
@@ -5397,7 +5451,7 @@ namespace gamething
 
                 for (int i = 0; i < ec; i++)
                 {
-                    enemies[i] = (state.EnemyX[i], state.EnemyY[i]);
+                    enemies[i] = (state.EnemyX[i] * sw, state.EnemyY[i] * sh);
                     enemyAlive[i] = state.EnemyAlive[i];
                     enemyIsTank[i] = state.EnemyType[i] == 1;
                     enemyCanShoot[i] = state.EnemyType[i] == 2;
@@ -5407,19 +5461,19 @@ namespace gamething
                 // Sync bullets
                 var newBullets = new List<(float x, float y, float velX, float velY, int bounces)>(state.BulletCount);
                 for (int i = 0; i < state.BulletCount; i++)
-                    newBullets.Add((state.BulletX[i], state.BulletY[i], 0, 0, 0));
+                    newBullets.Add((state.BulletX[i] * sw, state.BulletY[i] * sh, 0, 0, 0));
                 bullets = newBullets;
 
                 // Sync coins
                 var newCoins = new List<(float x, float y, float velX, float velY)>(state.CoinCount);
                 for (int i = 0; i < state.CoinCount; i++)
-                    newCoins.Add((state.CoinX[i], state.CoinY[i], 0, 0));
+                    newCoins.Add((state.CoinX[i] * sw, state.CoinY[i] * sh, 0, 0));
                 coins = newCoins;
 
                 // Sync enemy bullets
                 var newEB = new List<(float x, float y, float velX, float velY)>(state.EnemyBulletCount);
                 for (int i = 0; i < state.EnemyBulletCount; i++)
-                    newEB.Add((state.EnemyBulletX[i], state.EnemyBulletY[i], 0, 0));
+                    newEB.Add((state.EnemyBulletX[i] * sw, state.EnemyBulletY[i] * sh, 0, 0));
                 enemyBullets = newEB;
 
                 // Handle death states
@@ -5440,6 +5494,14 @@ namespace gamething
         {
             if (p2Dead) return; // dead P2 can't move or act
 
+            // Scale normalized aim coords to host's resolution
+            float hw = ClientSize.Width;
+            float hh = ClientSize.Height;
+            float aimX = input.AimX * hw;
+            float aimY = input.AimY * hh;
+            float wallAimX = input.WallAimX * hw;
+            float wallAimY = input.WallAimY * hh;
+
             // Host simulates P2 movement
             float p2Speed = speed;
             if (input.MoveX != 0 || input.MoveY != 0)
@@ -5459,8 +5521,8 @@ namespace gamething
             {
                 float cx = p2X + boxSize / 2f;
                 float cy = p2Y + boxSize / 2f;
-                float dirX = input.AimX - cx;
-                float dirY = input.AimY - cy;
+                float dirX = aimX - cx;
+                float dirY = aimY - cy;
                 float dist = (float)Math.Sqrt(dirX * dirX + dirY * dirY);
                 if (dist > 0)
                 {
@@ -5499,8 +5561,8 @@ namespace gamething
                 else
                 {
                     boxWalls.Clear();
-                    float wDirX = input.WallAimX - (p2X + boxSize / 2);
-                    float wDirY = input.WallAimY - (p2Y + boxSize / 2);
+                    float wDirX = wallAimX - (p2X + boxSize / 2);
+                    float wDirY = wallAimY - (p2Y + boxSize / 2);
                     float wDist = (float)Math.Sqrt(wDirX * wDirX + wDirY * wDirY);
                     float angle = (float)Math.Atan2(wDirY, wDirX) + (float)(Math.PI / 2);
                     float spawnX = p2X + boxSize / 2;
@@ -5777,6 +5839,12 @@ namespace gamething
 
             hostBtn.Click += (s, e) =>
             {
+                if (playerName == "YOU")
+                {
+                    statusLabel.Text = "Set your name first! (change in Preferences)";
+                    statusLabel.ForeColor = Color.Red;
+                    return;
+                }
                 // Start embedded relay server
                 embeddedRelay = new EmbeddedRelay();
                 try
@@ -5890,6 +5958,12 @@ namespace gamething
 
             joinBtn.Click += (s, e) =>
             {
+                if (playerName == "YOU")
+                {
+                    statusLabel.Text = "Set your name first! (change in Preferences)";
+                    statusLabel.ForeColor = Color.Red;
+                    return;
+                }
                 string ip = hostIpBox.Text.Trim();
                 string code = codeBox.Text.Trim().ToUpper();
                 if (ip.Length == 0) { statusLabel.Text = "Enter host IP"; statusLabel.ForeColor = Color.Red; return; }
