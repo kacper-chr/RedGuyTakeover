@@ -36,7 +36,7 @@ public class NetworkManager
     public NetworkManager()
     {
         _listener = new EventBasedNetListener();
-        _client = new NetManager(_listener) { AutoRecycle = true };
+        _client = new NetManager(_listener) { AutoRecycle = true, IPv6Enabled = false };
 
         _listener.PeerConnectedEvent += peer =>
         {

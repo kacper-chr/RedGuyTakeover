@@ -5548,21 +5548,48 @@ namespace gamething
                     this.Invoke(() => { statusLabel.Text = msg; statusLabel.ForeColor = Color.Red; });
                 };
 
-                netManager.Connect("127.0.0.1");
-                System.Windows.Forms.Timer connectTimer = new() { Interval = 100 };
+                hostBtn.Enabled = false;
+                joinBtn.Enabled = false;
+
+                // Small delay to let the server fully start, then connect
+                int attempts = 0;
+                System.Windows.Forms.Timer connectTimer = new() { Interval = 200 };
                 connectTimer.Tick += (s2, e2) =>
                 {
+                    attempts++;
+
+                    // First tick: initiate the connection
+                    if (attempts == 1)
+                    {
+                        netManager.Connect("127.0.0.1");
+                        return;
+                    }
+
                     netManager.PollEvents();
+
                     if (netManager.IsConnected)
                     {
                         connectTimer.Stop();
+                        statusLabel.Text = "Connected! Creating room...";
                         netManager.CreateRoom(playerName);
+                        return;
+                    }
+
+                    // Timeout after 10 seconds
+                    if (attempts > 50)
+                    {
+                        connectTimer.Stop();
+                        statusLabel.Text = "Connection timed out. Windows Firewall may be blocking port 9050.";
+                        statusLabel.ForeColor = Color.Red;
+                        hostBtn.Enabled = true;
+                        joinBtn.Enabled = true;
+                    }
+                    else
+                    {
+                        statusLabel.Text = $"Connecting... ({attempts - 1})";
                     }
                 };
                 connectTimer.Start();
-
-                hostBtn.Enabled = false;
-                joinBtn.Enabled = false;
             };
 
             joinBtn.Click += (s, e) =>
@@ -5594,21 +5621,35 @@ namespace gamething
                 netManager.Connect(ip);
                 statusLabel.Text = "Connecting...";
                 statusLabel.ForeColor = Color.Yellow;
+                hostBtn.Enabled = false;
+                joinBtn.Enabled = false;
 
-                System.Windows.Forms.Timer connectTimer = new() { Interval = 100 };
+                int joinAttempts = 0;
+                System.Windows.Forms.Timer connectTimer = new() { Interval = 200 };
                 connectTimer.Tick += (s2, e2) =>
                 {
+                    joinAttempts++;
                     netManager.PollEvents();
                     if (netManager.IsConnected)
                     {
                         connectTimer.Stop();
                         netManager.JoinRoom(code, playerName);
+                        return;
+                    }
+                    if (joinAttempts > 50)
+                    {
+                        connectTimer.Stop();
+                        statusLabel.Text = "Connection timed out. Check the IP and that port 9050 is open.";
+                        statusLabel.ForeColor = Color.Red;
+                        hostBtn.Enabled = true;
+                        joinBtn.Enabled = true;
+                    }
+                    else
+                    {
+                        statusLabel.Text = $"Connecting to {ip}... ({joinAttempts})";
                     }
                 };
                 connectTimer.Start();
-
-                hostBtn.Enabled = false;
-                joinBtn.Enabled = false;
             };
 
             startBtn.Click += (s, e) => StartGame(true);

@@ -24,7 +24,7 @@ public class EmbeddedRelay
         if (_running) return;
 
         _listener = new EventBasedNetListener();
-        _server = new NetManager(_listener) { AutoRecycle = true };
+        _server = new NetManager(_listener) { AutoRecycle = true, IPv6Enabled = false };
 
         _listener.ConnectionRequestEvent += request =>
         {
