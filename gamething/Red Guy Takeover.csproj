@@ -24,7 +24,12 @@
 
   <ItemGroup>
     <PackageReference Include="Autoupdater.NET.Official" Version="1.9.2" />
+    <PackageReference Include="LiteNetLib" Version="2.1.2" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedProtocol\SharedProtocol.csproj" />
   </ItemGroup>
 
 </Project>

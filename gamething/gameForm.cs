@@ -1,5 +1,5 @@
 ﻿using AutoUpdaterDotNET;
-
+using SharedProtocol;
 
 namespace gamething
 {
@@ -394,6 +394,25 @@ namespace gamething
         private Button? menuHistoryBtn = null;
         private Button? menuBestiaryBtn = null;
         private Button? menuAchievementsBtn = null;
+        private Button? menuMultiplayerBtn = null;
+
+        // --- Multiplayer ---
+        private NetworkManager? netManager = null;
+        private bool isMultiplayer = false;
+        private bool isNetHost = false;
+        private string relayServerIp = "127.0.0.1"; // TODO: set to your Oracle Cloud VM IP
+
+        // Player 2 state (rendered on both host and client)
+        private float p2X = 0f, p2Y = 0f;
+        private float p2Health = 50f, p2MaxHealth = 50f;
+        private bool p2Dashing = false;
+        private string p2Name = "Player 2";
+
+        // Client-side: latest game state from host
+        private GameStatePacket? latestGameState = null;
+
+        // Host-side: latest input from client
+        private PlayerInputPacket latestP2Input = new();
 
         // --- Achievements ---
         private HashSet<string> unlockedAchievements = new HashSet<string>();
@@ -1119,6 +1138,16 @@ namespace gamething
                                 HandlePlayerDeath();
                         }
                     }
+                    // P2 enemy collision (multiplayer host only)
+                    if (isMultiplayer && isNetHost && !p2Dashing &&
+                        enemies[i].x < p2X + playerSize && enemies[i].x + boxSize > p2X &&
+                        enemies[i].y < p2Y + playerSize && enemies[i].y + boxSize > p2Y)
+                    {
+                        bool isTank2 = i < enemyIsTank.Count && enemyIsTank[i];
+                        float dmg2 = isTank2 ? enemyDamage * 3f : enemyDamage;
+                        p2Health -= dmg2 * deltaTime * 2f;
+                        if (p2Health <= 0) p2Health = 0;
+                    }
                     if (i < enemyCanShoot.Count && enemyCanShoot[i])
                     {
                         enemyShootTimers[i] += deltaTime;
@@ -1750,6 +1779,40 @@ namespace gamething
                 achievementToastTimer -= deltaTime;
             CheckAchievements();
 
+            // --- Multiplayer network sync ---
+            if (isMultiplayer && netManager != null)
+            {
+                netManager.PollEvents();
+
+                if (isNetHost)
+                {
+                    // Apply P2 input from client
+                    ApplyP2Input(latestP2Input);
+
+                    // Send game state to client
+                    var state = BuildGameStatePacket();
+                    netManager.SendGameState(state);
+                }
+                else
+                {
+                    // Client: send our input to host
+                    var input = new PlayerInputPacket
+                    {
+                        MoveX = velocityX,
+                        MoveY = velocityY,
+                        AimX = mousePos.X,
+                        AimY = mousePos.Y,
+                        Shooting = mouseHeld,
+                        Dashing = isDashing
+                    };
+                    netManager.SendPlayerInput(input);
+
+                    // Apply latest state from host
+                    if (latestGameState.HasValue)
+                        ApplyGameState(latestGameState.Value);
+                }
+            }
+
             this.Invalidate();
         }
 
@@ -2121,6 +2184,40 @@ namespace gamething
                 e.Graphics.FillPath(new SolidBrush(playerColor), path);
                 e.Graphics.DrawPath(borderPen, path);
             }
+
+            // Draw Player 2 in multiplayer
+            if (isMultiplayer)
+            {
+                using (System.Drawing.Drawing2D.GraphicsPath p2path = new System.Drawing.Drawing2D.GraphicsPath())
+                {
+                    float r2 = playerSize / 5;
+                    p2path.AddArc(p2X, p2Y, r2, r2, 180, 90);
+                    p2path.AddArc(p2X + playerSize - r2, p2Y, r2, r2, 270, 90);
+                    p2path.AddArc(p2X + playerSize - r2, p2Y + playerSize - r2, r2, r2, 0, 90);
+                    p2path.AddArc(p2X, p2Y + playerSize - r2, r2, r2, 90, 90);
+                    p2path.CloseFigure();
+                    Color p2Color = p2Dashing ? Color.FromArgb(150, 100, 200, 255) : Color.FromArgb(255, 80, 140, 255);
+                    e.Graphics.FillPath(new SolidBrush(p2Color), p2path);
+                    e.Graphics.DrawPath(new Pen(Color.FromArgb(40, 80, 160), 2), p2path);
+                }
+                // P2 name tag
+                using (var nameBrush = new SolidBrush(Color.FromArgb(180, 80, 140, 255)))
+                {
+                    e.Graphics.DrawString(p2Name, GetFontSmall(), nameBrush,
+                        p2X + playerSize / 2 - 20, p2Y - 18);
+                }
+                // P2 health bar
+                if (p2MaxHealth > 0)
+                {
+                    float hbW = playerSize + 10;
+                    float hbX = p2X - 5;
+                    float hbY = p2Y + playerSize + 4;
+                    float p2HpFill = Math.Max(0, p2Health / p2MaxHealth);
+                    e.Graphics.FillRectangle(Brushes.DarkGray, hbX, hbY, hbW, 4);
+                    e.Graphics.FillRectangle(Brushes.DodgerBlue, hbX, hbY, hbW * p2HpFill, 4);
+                }
+            }
+
             // Draw enemies
             for (int i = 0; i < enemies.Count; i++)
             {
@@ -4034,6 +4131,7 @@ namespace gamething
                             this.Controls.Remove(menuHistoryBtn);
                             this.Controls.Remove(menuBestiaryBtn);
                             this.Controls.Remove(menuAchievementsBtn);
+                            this.Controls.Remove(menuMultiplayerBtn);
                             isPaused = false;
                             ApplyDifficulty();
                             ResetGame();
@@ -4052,6 +4150,7 @@ namespace gamething
                             this.Controls.Remove(menuHistoryBtn);
                             this.Controls.Remove(menuBestiaryBtn);
                             this.Controls.Remove(menuAchievementsBtn);
+                            this.Controls.Remove(menuMultiplayerBtn);
                             isPaused = false;
                             ApplyDifficulty();
                             ResetGame();
@@ -4318,6 +4417,22 @@ namespace gamething
             menuAchievementsBtn.Click += (s, e) => ShowAchievements();
             this.Controls.Add(menuAchievementsBtn);
             menuAchievementsBtn.BringToFront();
+
+            menuMultiplayerBtn = new Button();
+            menuMultiplayerBtn.Text = "🌐 Multiplayer";
+            menuMultiplayerBtn.Size = new Size(250, 45);
+            menuMultiplayerBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 395);
+            menuMultiplayerBtn.BackColor = Color.FromArgb(40, 80, 120);
+            menuMultiplayerBtn.ForeColor = Color.White;
+            menuMultiplayerBtn.FlatStyle = FlatStyle.Flat;
+            menuMultiplayerBtn.FlatAppearance.BorderColor = Color.FromArgb(60, 110, 160);
+            menuMultiplayerBtn.Font = new Font("Arial", 13, FontStyle.Bold);
+            menuMultiplayerBtn.Cursor = Cursors.Hand;
+            menuMultiplayerBtn.MouseEnter += (s, e) => menuMultiplayerBtn.BackColor = Color.FromArgb(50, 100, 150);
+            menuMultiplayerBtn.MouseLeave += (s, e) => menuMultiplayerBtn.BackColor = Color.FromArgb(40, 80, 120);
+            menuMultiplayerBtn.Click += (s, e) => ShowMultiplayerMenu();
+            this.Controls.Add(menuMultiplayerBtn);
+            menuMultiplayerBtn.BringToFront();
             this.ClientSizeChanged += resizeHandler;
             menuPlayBtn.Click += (s, e) => this.ClientSizeChanged -= resizeHandler;
             menuQuitBtn.Click += (s, e) => this.ClientSizeChanged -= resizeHandler;
@@ -5019,5 +5134,466 @@ namespace gamething
             achForm.ShowDialog();
         }
 
+        // --- Multiplayer sync helpers ---
+        private GameStatePacket BuildGameStatePacket()
+        {
+            var pkt = new GameStatePacket
+            {
+                HostX = posX, HostY = posY,
+                HostHealth = health, HostMaxHealth = maxHealth,
+                HostScore = score,
+                HostDashing = isDashing,
+
+                ClientX = p2X, ClientY = p2Y,
+                ClientHealth = p2Health, ClientMaxHealth = p2MaxHealth,
+                ClientDashing = p2Dashing,
+
+                TimeAlive = timeAlive,
+                TotalKills = totalKills,
+                BossActive = bossAlive,
+                BossX = bossX, BossY = bossY,
+                BossHealth = bossHealth, BossMaxHealth = bossMaxHealth,
+            };
+
+            int eCount = Math.Min(enemies.Count, 100);
+            pkt.EnemyCount = eCount;
+            pkt.EnemyX = new float[eCount];
+            pkt.EnemyY = new float[eCount];
+            pkt.EnemyAlive = new bool[eCount];
+            pkt.EnemyType = new int[eCount];
+            for (int i = 0; i < eCount; i++)
+            {
+                pkt.EnemyX[i] = enemies[i].x;
+                pkt.EnemyY[i] = enemies[i].y;
+                pkt.EnemyAlive[i] = i < enemyAlive.Count && enemyAlive[i];
+                pkt.EnemyType[i] = (i < enemyIsTank.Count && enemyIsTank[i]) ? 1 :
+                                   (i < enemyCanShoot.Count && enemyCanShoot[i]) ? 2 : 0;
+            }
+
+            int bCount = Math.Min(bullets.Count, 200);
+            pkt.BulletCount = bCount;
+            pkt.BulletX = new float[bCount];
+            pkt.BulletY = new float[bCount];
+            for (int i = 0; i < bCount; i++)
+            {
+                pkt.BulletX[i] = bullets[i].x;
+                pkt.BulletY[i] = bullets[i].y;
+            }
+
+            int cCount = Math.Min(coins.Count, 50);
+            pkt.CoinCount = cCount;
+            pkt.CoinX = new float[cCount];
+            pkt.CoinY = new float[cCount];
+            for (int i = 0; i < cCount; i++)
+            {
+                pkt.CoinX[i] = coins[i].x;
+                pkt.CoinY[i] = coins[i].y;
+            }
+
+            return pkt;
+        }
+
+        private void ApplyGameState(GameStatePacket state)
+        {
+            // On client: update everything from host's authoritative state
+            // Host player position (rendered as "other player" on client)
+            p2X = state.HostX;
+            p2Y = state.HostY;
+            p2Health = state.HostHealth;
+            p2MaxHealth = state.HostMaxHealth;
+            p2Dashing = state.HostDashing;
+
+            // Our own position (as simulated by host)
+            posX = state.ClientX;
+            posY = state.ClientY;
+            health = state.ClientHealth;
+            maxHealth = state.ClientMaxHealth;
+            isDashing = state.ClientDashing;
+
+            score = state.HostScore;
+            timeAlive = state.TimeAlive;
+            totalKills = state.TotalKills;
+
+            bossAlive = state.BossActive;
+            if (state.BossActive)
+            {
+                bossX = state.BossX;
+                bossY = state.BossY;
+                bossHealth = state.BossHealth;
+                bossMaxHealth = state.BossMaxHealth;
+            }
+
+            // Sync enemies for rendering
+            while (enemies.Count < state.EnemyCount)
+                enemies.Add((0, 0));
+            while (enemyAlive.Count < state.EnemyCount)
+                enemyAlive.Add(false);
+            while (enemyIsTank.Count < state.EnemyCount)
+                enemyIsTank.Add(false);
+            while (enemyCanShoot.Count < state.EnemyCount)
+                enemyCanShoot.Add(false);
+
+            for (int i = 0; i < state.EnemyCount; i++)
+            {
+                enemies[i] = (state.EnemyX[i], state.EnemyY[i]);
+                enemyAlive[i] = state.EnemyAlive[i];
+                enemyIsTank[i] = state.EnemyType[i] == 1;
+                enemyCanShoot[i] = state.EnemyType[i] == 2;
+            }
+
+            // Sync bullets for rendering
+            bullets.Clear();
+            for (int i = 0; i < state.BulletCount; i++)
+                bullets.Add((state.BulletX[i], state.BulletY[i], 0, 0, 0));
+
+            // Sync coins for rendering
+            coins.Clear();
+            for (int i = 0; i < state.CoinCount; i++)
+                coins.Add((state.CoinX[i], state.CoinY[i], 0, 0));
+        }
+
+        private void ApplyP2Input(PlayerInputPacket input)
+        {
+            // Host simulates P2 movement
+            float p2Speed = speed;
+            if (input.MoveX != 0 || input.MoveY != 0)
+            {
+                float len = (float)Math.Sqrt(input.MoveX * input.MoveX + input.MoveY * input.MoveY);
+                if (len > 0)
+                {
+                    p2X += (input.MoveX / len) * p2Speed * deltaTime * 60f;
+                    p2Y += (input.MoveY / len) * p2Speed * deltaTime * 60f;
+                }
+            }
+            p2X = Math.Max(0, Math.Min(p2X, ClientSize.Width - boxSize));
+            p2Y = Math.Max(0, Math.Min(p2Y, ClientSize.Height - boxSize));
+
+            // P2 shooting — create bullets aimed at their mouse position
+            if (input.Shooting && shootCooldown <= 0)
+            {
+                float cx = p2X + boxSize / 2f;
+                float cy = p2Y + boxSize / 2f;
+                float dirX = input.AimX - cx;
+                float dirY = input.AimY - cy;
+                float dist = (float)Math.Sqrt(dirX * dirX + dirY * dirY);
+                if (dist > 0)
+                {
+                    float vx = dirX / dist * bulletSpeed;
+                    float vy = dirY / dist * bulletSpeed;
+                    bullets.Add((cx + dirX / dist * 20, cy + dirY / dist * 20, vx, vy, 0));
+                }
+            }
+        }
+
+        private void InitMultiplayerCallbacks()
+        {
+            if (netManager == null) return;
+            netManager.OnPlayerInputReceived += input => latestP2Input = input;
+            netManager.OnGameStateReceived += state => latestGameState = state;
+            netManager.OnPeerLeft += () =>
+            {
+                this.Invoke(() =>
+                {
+                    isMultiplayer = false;
+                    // Could show a message or return to menu
+                });
+            };
+        }
+
+        private void ShowMultiplayerMenu()
+        {
+            menuPlayBtn.Visible = false;
+            menuQuitBtn.Visible = false;
+            menuPrefsBtn.Visible = false;
+
+            List<Control> mpControls = new();
+
+            Label titleLabel = new Label();
+            titleLabel.Text = "🌐 MULTIPLAYER";
+            titleLabel.Font = new Font("Arial", 18, FontStyle.Bold);
+            titleLabel.ForeColor = Color.White;
+            titleLabel.Size = new Size(300, 40);
+            titleLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 100);
+            mpControls.Add(titleLabel);
+
+            Label statusLabel = new Label();
+            statusLabel.Text = "Not connected";
+            statusLabel.Font = new Font("Arial", 11);
+            statusLabel.ForeColor = Color.Gray;
+            statusLabel.Size = new Size(400, 25);
+            statusLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 55);
+            mpControls.Add(statusLabel);
+
+            Label serverLabel = new Label();
+            serverLabel.Text = "Server IP:";
+            serverLabel.Font = new Font("Arial", 11);
+            serverLabel.ForeColor = Color.White;
+            serverLabel.Size = new Size(80, 25);
+            serverLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 20);
+            mpControls.Add(serverLabel);
+
+            TextBox serverIpBox = new TextBox();
+            serverIpBox.Text = relayServerIp;
+            serverIpBox.Font = new Font("Consolas", 12);
+            serverIpBox.Size = new Size(200, 30);
+            serverIpBox.Location = new Point((int)(130 * scaleX), ClientSize.Height / 2 - 22);
+            serverIpBox.BackColor = Color.FromArgb(30, 30, 45);
+            serverIpBox.ForeColor = Color.White;
+            serverIpBox.BorderStyle = BorderStyle.FixedSingle;
+            mpControls.Add(serverIpBox);
+
+            Button hostBtn = new Button();
+            hostBtn.Text = "🏠 Host Game";
+            hostBtn.Size = new Size(250, 50);
+            hostBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 20);
+            hostBtn.BackColor = Color.FromArgb(40, 100, 40);
+            hostBtn.ForeColor = Color.White;
+            hostBtn.FlatStyle = FlatStyle.Flat;
+            hostBtn.Font = new Font("Arial", 14, FontStyle.Bold);
+            hostBtn.Cursor = Cursors.Hand;
+            mpControls.Add(hostBtn);
+
+            Label roomCodeLabel = new Label();
+            roomCodeLabel.Text = "";
+            roomCodeLabel.Font = new Font("Consolas", 22, FontStyle.Bold);
+            roomCodeLabel.ForeColor = Color.Gold;
+            roomCodeLabel.Size = new Size(300, 40);
+            roomCodeLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 80);
+            mpControls.Add(roomCodeLabel);
+
+            Label orLabel = new Label();
+            orLabel.Text = "— OR —";
+            orLabel.Font = new Font("Arial", 11);
+            orLabel.ForeColor = Color.Gray;
+            orLabel.Size = new Size(250, 25);
+            orLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 125);
+            orLabel.TextAlign = ContentAlignment.MiddleCenter;
+            mpControls.Add(orLabel);
+
+            Label joinLabel = new Label();
+            joinLabel.Text = "Room Code:";
+            joinLabel.Font = new Font("Arial", 11);
+            joinLabel.ForeColor = Color.White;
+            joinLabel.Size = new Size(100, 25);
+            joinLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 160);
+            mpControls.Add(joinLabel);
+
+            TextBox codeBox = new TextBox();
+            codeBox.Font = new Font("Consolas", 14);
+            codeBox.Size = new Size(130, 30);
+            codeBox.Location = new Point((int)(150 * scaleX), ClientSize.Height / 2 + 157);
+            codeBox.BackColor = Color.FromArgb(30, 30, 45);
+            codeBox.ForeColor = Color.White;
+            codeBox.BorderStyle = BorderStyle.FixedSingle;
+            codeBox.MaxLength = 5;
+            codeBox.CharacterCasing = CharacterCasing.Upper;
+            mpControls.Add(codeBox);
+
+            Button joinBtn = new Button();
+            joinBtn.Text = "🔗 Join";
+            joinBtn.Size = new Size(120, 50);
+            joinBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 195);
+            joinBtn.BackColor = Color.FromArgb(40, 80, 140);
+            joinBtn.ForeColor = Color.White;
+            joinBtn.FlatStyle = FlatStyle.Flat;
+            joinBtn.Font = new Font("Arial", 14, FontStyle.Bold);
+            joinBtn.Cursor = Cursors.Hand;
+            mpControls.Add(joinBtn);
+
+            Button startBtn = new Button();
+            startBtn.Text = "▶ Start Game";
+            startBtn.Size = new Size(250, 50);
+            startBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 260);
+            startBtn.BackColor = Color.FromArgb(40, 100, 40);
+            startBtn.ForeColor = Color.White;
+            startBtn.FlatStyle = FlatStyle.Flat;
+            startBtn.Font = new Font("Arial", 14, FontStyle.Bold);
+            startBtn.Cursor = Cursors.Hand;
+            startBtn.Visible = false;
+            mpControls.Add(startBtn);
+
+            Button backBtn = new Button();
+            backBtn.Text = "◀ Back";
+            backBtn.Size = new Size(250, 35);
+            backBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 320);
+            backBtn.BackColor = Color.FromArgb(60, 60, 60);
+            backBtn.ForeColor = Color.White;
+            backBtn.FlatStyle = FlatStyle.Flat;
+            backBtn.Font = new Font("Arial", 12);
+            backBtn.Cursor = Cursors.Hand;
+            mpControls.Add(backBtn);
+
+            void Cleanup()
+            {
+                foreach (var c in mpControls) this.Controls.Remove(c);
+                if (netManager != null && !isMultiplayer)
+                {
+                    netManager.Disconnect();
+                    netManager = null;
+                }
+                menuPlayBtn.Visible = true;
+                menuQuitBtn.Visible = true;
+                menuPrefsBtn.Visible = true;
+            }
+
+            backBtn.Click += (s, e) => Cleanup();
+
+            hostBtn.Click += (s, e) =>
+            {
+                relayServerIp = serverIpBox.Text.Trim();
+                netManager = new NetworkManager();
+                netManager.OnRoomCreated += () =>
+                {
+                    this.Invoke(() =>
+                    {
+                        roomCodeLabel.Text = $"Code: {netManager.RoomCode}";
+                        statusLabel.Text = netManager.StatusMessage;
+                        statusLabel.ForeColor = Color.LimeGreen;
+                    });
+                };
+                netManager.OnPeerJoined += () =>
+                {
+                    this.Invoke(() =>
+                    {
+                        statusLabel.Text = $"{netManager.PeerName} joined! Ready to start.";
+                        statusLabel.ForeColor = Color.Gold;
+                        p2Name = netManager.PeerName;
+                        startBtn.Visible = true;
+                    });
+                };
+                netManager.OnPeerLeft += () =>
+                {
+                    this.Invoke(() =>
+                    {
+                        statusLabel.Text = "Peer disconnected";
+                        statusLabel.ForeColor = Color.Red;
+                        startBtn.Visible = false;
+                    });
+                };
+                netManager.OnError += msg =>
+                {
+                    this.Invoke(() =>
+                    {
+                        statusLabel.Text = msg;
+                        statusLabel.ForeColor = Color.Red;
+                    });
+                };
+
+                netManager.Connect(relayServerIp);
+                statusLabel.Text = "Connecting...";
+                statusLabel.ForeColor = Color.Yellow;
+
+                // Poll until connected, then create room
+                System.Windows.Forms.Timer connectTimer = new() { Interval = 100 };
+                connectTimer.Tick += (s2, e2) =>
+                {
+                    netManager.PollEvents();
+                    if (netManager.IsConnected)
+                    {
+                        connectTimer.Stop();
+                        netManager.CreateRoom(playerName);
+                    }
+                };
+                connectTimer.Start();
+
+                hostBtn.Enabled = false;
+                joinBtn.Enabled = false;
+            };
+
+            joinBtn.Click += (s, e) =>
+            {
+                if (codeBox.Text.Trim().Length < 5) return;
+                relayServerIp = serverIpBox.Text.Trim();
+                netManager = new NetworkManager();
+                netManager.OnRoomJoined += () =>
+                {
+                    this.Invoke(() =>
+                    {
+                        statusLabel.Text = $"Joined {netManager.PeerName}'s room — waiting for host to start...";
+                        statusLabel.ForeColor = Color.LimeGreen;
+                        p2Name = netManager.PeerName;
+                    });
+                };
+                netManager.OnGameStartReceived += () =>
+                {
+                    this.Invoke(() =>
+                    {
+                        isMultiplayer = true;
+                        isNetHost = false;
+                        InitMultiplayerCallbacks();
+                        foreach (var c in mpControls) this.Controls.Remove(c);
+                        this.Controls.Remove(menuPlayBtn);
+                        this.Controls.Remove(menuQuitBtn);
+                        this.Controls.Remove(menuPrefsBtn);
+                        this.Controls.Remove(menuHistoryBtn);
+                        this.Controls.Remove(menuBestiaryBtn);
+                        this.Controls.Remove(menuAchievementsBtn);
+                        this.Controls.Remove(menuMultiplayerBtn);
+                        onMainMenu = false;
+                        isPaused = false;
+                        ApplyDifficulty();
+                        ResetGame();
+                    });
+                };
+                netManager.OnError += msg =>
+                {
+                    this.Invoke(() =>
+                    {
+                        statusLabel.Text = msg;
+                        statusLabel.ForeColor = Color.Red;
+                    });
+                };
+
+                netManager.Connect(relayServerIp);
+                statusLabel.Text = "Connecting...";
+                statusLabel.ForeColor = Color.Yellow;
+
+                string code = codeBox.Text.Trim().ToUpper();
+                System.Windows.Forms.Timer connectTimer = new() { Interval = 100 };
+                connectTimer.Tick += (s2, e2) =>
+                {
+                    netManager.PollEvents();
+                    if (netManager.IsConnected)
+                    {
+                        connectTimer.Stop();
+                        netManager.JoinRoom(code, playerName);
+                    }
+                };
+                connectTimer.Start();
+
+                hostBtn.Enabled = false;
+                joinBtn.Enabled = false;
+            };
+
+            startBtn.Click += (s, e) =>
+            {
+                isMultiplayer = true;
+                isNetHost = true;
+                InitMultiplayerCallbacks();
+                netManager?.SendGameStart();
+                foreach (var c in mpControls) this.Controls.Remove(c);
+                this.Controls.Remove(menuPlayBtn);
+                this.Controls.Remove(menuQuitBtn);
+                this.Controls.Remove(menuPrefsBtn);
+                this.Controls.Remove(menuHistoryBtn);
+                this.Controls.Remove(menuBestiaryBtn);
+                this.Controls.Remove(menuAchievementsBtn);
+                this.Controls.Remove(menuMultiplayerBtn);
+                onMainMenu = false;
+                isPaused = false;
+                difficulty = 0; // default Easy for multiplayer
+                sandboxMode = false;
+                ApplyDifficulty();
+                ResetGame();
+                p2X = posX + 50; p2Y = posY;
+                p2Health = maxHealth; p2MaxHealth = maxHealth;
+            };
+
+            foreach (var c in mpControls)
+            {
+                this.Controls.Add(c);
+                c.BringToFront();
+            }
+        }
     }
 }
