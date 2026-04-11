@@ -53,7 +53,7 @@ namespace gamething
         private const float enemySpeed = 5f;
         // --- bullet stuff ---
         private List<(float x, float y, float velX, float velY, int bounces)> bullets = new();
-        private float bulletSpeed = 15f;
+        private float bulletSpeed = 15f; // base value, scaled in ResetGame
         private int bulletSize = 6;
         private bool mouseHeld = false;
         private float shootCooldown = 0;
@@ -87,7 +87,7 @@ namespace gamething
         private Button? pauseQuitBtn = null;
         // --- Coins ---
         private List<(float x, float y, float velX, float velY)> coins = new List<(float x, float y, float velX, float velY)>();
-        private const int coinSize = 6;
+        private int coinSize = 6;
         private int coinWorth = 6;
         // --- Enemy Respawns ---
         private List<float> enemyRespawnTimers = new List<float>();
@@ -136,6 +136,7 @@ namespace gamething
         private const float dashTrailDuration = 0.5f;
         private const float dashTrailDamage = 20f;
         private int ricochetBounces = 0;
+        private bool smartBounce = false; // bounced bullets seek the nearest enemy
         private bool afterburn = false;
         private bool isAfterburn = false;
         private float afterburnTimer = 0f;
@@ -236,11 +237,12 @@ namespace gamething
 
         private float bossShootTimer = 0f;
         private const float bossShootRate = 2f;
-        private const float bossBulletSpeed = 40f;
+        private float bossBulletSpeed = 40f;
         private float bossBulletHitCooldown = 0f;
         private const float bossBulletHitCooldownTime = 0.3f;
         private float bossOrbitHitCooldown = 0f;
         private const float bossOrbitHitCooldownTime = 0.3f;
+        private float bossFlameTimer = 0f;
 
         private int bossesDefeated = 0;
 
@@ -271,9 +273,9 @@ namespace gamething
         private List<(float x, float y, float velX, float velY)> enemyBullets = new List<(float x, float y, float velX, float velY)>();
         private float shootingEnemyChance = 0.02f;
         private const float maxShootingEnemyChance = 0.30f;
-        private const float enemyBulletSpeed = 12f;
+        private float enemyBulletSpeed = 12f;
         private const float enemyShootRate = 1f;
-        private const int enemyBulletSize = 10;
+        private int enemyBulletSize = 10;
         private const float enemyBulletDamage = 3f;
         private List<bool> enemyIsTank = new List<bool>();
         private float tankEnemyChance = 0.02f;
@@ -316,6 +318,8 @@ namespace gamething
         private bool sandboxMode = false;
 
         private bool onPreferences = false;
+        private bool showDimOverlay = false;
+        private Panel? activeUpgradePanel = null;
         private Button? menuPrefsBtn = null;
         private Button? menuPrefsBackBtn = null;
         // --- Inspecting ---
@@ -377,8 +381,8 @@ namespace gamething
 
         private int pendingUnlockAnimation = -1;
         // --- Run History ---
-        private List<(float score, int kills, float time, int difficulty, bool sandbox)> runHistory =
-            new List<(float score, int kills, float time, int difficulty, bool sandbox)>();
+        private List<(float score, int kills, float time, int difficulty, bool sandbox, bool multiplayer)> runHistory =
+            new List<(float score, int kills, float time, int difficulty, bool sandbox, bool multiplayer)>();
         private const int maxRunHistory = 5;
 
         // --- Bestiary ---
@@ -406,12 +410,17 @@ namespace gamething
         private float p2X = 0f, p2Y = 0f;
         private float p2Health = 50f, p2MaxHealth = 50f;
         private bool p2Dashing = false;
+        private float p2DashTimer = 0f;
+        private float p2DashVelX = 0f;
+        private float p2DashVelY = 0f;
+        private float p2DashCooldown = 0f;
         private string p2Name = "Player 2";
         private bool p2Dead = false;
         private bool hostDead = false;
         private int p2PendingUpgrade = -1; // client sends upgrade purchase to host
         private bool p2PendingSuper = false; // client wants to activate super
         private bool p2PendingWall = false; // client wants to activate wall
+        private bool p2PendingDash = false; // client wants to dash (one-shot trigger)
 
         // Client-side: latest game state from host
         private GameStatePacket? latestGameState = null;
@@ -491,6 +500,7 @@ namespace gamething
 
         private void UnlockAchievement(string id)
         {
+            if (sandboxMode) return; // Don't grant achievements in sandbox
             if (difficulty < 1) return; // Only unlock on Normal (1) or higher
             if (unlockedAchievements.Contains(id)) return;
             unlockedAchievements.Add(id);
@@ -519,7 +529,7 @@ namespace gamething
             this.Text = "Red Guy Takeover ALPHA RELEASE";
             this.ClientSize = new Size(1900, 1080);
             this.WindowState = FormWindowState.Maximized;
-            this.Deactivate += (s, e) => isPaused = true;
+            this.Deactivate += (s, e) => { if (!onMainMenu) isPaused = true; };
             this.BackColor = Color.FromArgb(20, 20, 20);
             this.Shown += (s, e) =>
             {
@@ -541,6 +551,7 @@ namespace gamething
             enemyRespawnTimers = new List<float>(new float[enemies.Count]);
             enemyAlive = Enumerable.Repeat(true, enemies.Count).ToList();
             this.DoubleBuffered = true;
+            this.KeyPreview = true;
             this.KeyDown += Form1_KeyDown;
             this.KeyUp += Form1_KeyUp;
             this.Paint += Form1_Paint;
@@ -559,7 +570,16 @@ namespace gamething
                 case Keys.A: velocityX = -speed; break;
                 case Keys.D: velocityX = speed; break;
                 case Keys.Space:
-                    if (!isDashing && dashCooldown <= 0)
+                    e.SuppressKeyPress = true;
+                    e.Handled = true;
+                    if (onMainMenu || isPaused) break;
+                    if (isMultiplayer && !isNetHost)
+                    {
+                        // Client: send dash trigger to host; the host runs the dash
+                        // simulation and authoritatively syncs isDashing/dashCooldown back.
+                        if (dashCooldown <= 0) p2PendingDash = true;
+                    }
+                    else if (!isDashing && dashCooldown <= 0)
                     {
                         isDashing = true;
                         dashTimer = dashDuration;
@@ -641,10 +661,7 @@ namespace gamething
                     velocityX = 0f;
                     velocityY = 0f;
                     ShowUpgradeMenu();
-                    isPaused = false;
-                    velocityX = 0f;
-                    velocityY = 0f;
-                    HidePauseButtons();
+                    // isPaused is cleared in the upgrade menu's close handler
                     break;
                 case Keys.F:
                     if (decoy && !decoyActive && decoyCooldown <= 0)
@@ -871,6 +888,11 @@ namespace gamething
                             }
                         }
                     }
+                    if (BossOverlaps(t.x, t.y, playerSize / 2, playerSize / 2) && bossOrbitHitCooldown <= 0)
+                    {
+                        DamageBoss(1f);
+                        bossOrbitHitCooldown = bossOrbitHitCooldownTime;
+                    }
                     newTrail.Add((t.x, t.y, newTimer));
                 }
             }
@@ -1006,11 +1028,18 @@ namespace gamething
                 float bDirX = bossTgtX - bossX;
                 float bDirY = bossTgtY - bossY;
                 float bDist = (float)Math.Sqrt(bDirX * bDirX + bDirY * bDirY);
-                superCooldown = superCooldownTime;
                 if (bDist > 0)
                 {
+                    float bossPrevX = bossX;
+                    float bossPrevY = bossY;
                     bossX += (bDirX / bDist) * bossSpeed * scale * deltaTime * 60;
                     bossY += (bDirY / bDist) * bossSpeed * scale * deltaTime * 60;
+                    // Block the boss from phasing through walls
+                    if (CollidesWithWall(bossX, bossY, (int)(bossSize * scale)))
+                    {
+                        bossX = bossPrevX;
+                        bossY = bossPrevY;
+                    }
                 }
 
                 if (!isDashing &&
@@ -1021,6 +1050,7 @@ namespace gamething
                     {
                         health -= bossDamage;
                         bossHitCooldown = 0.5f;
+                        if (thorns) DamageBoss(1f);
                         if (health <= 0)
                             HandlePlayerDeath();
                     }
@@ -1070,7 +1100,8 @@ namespace gamething
             // Enemies
             if (gameStartTimer > gameStartDelay)
             {
-                if (!bossAlive)
+                // Only host spawns enemies in MP. Client receives the list via state packet.
+                if (!bossAlive && (!isMultiplayer || isNetHost))
                 {
                     enemySpawnTimer += deltaTime;
                     if (enemySpawnTimer >= enemySpawnRate)
@@ -1514,6 +1545,45 @@ namespace gamething
                         }
                     }
                 }
+                else if (smartBounce && bounces > 0)
+                {
+                    // Smart Bounce: after a ricochet, slowly curve toward the nearest
+                    // enemy. The curve strength scales with bullet speed (faster bullet
+                    // = sharper turn). Doesn't stack with homing.
+                    float closestDist = float.MaxValue;
+                    float targetX = nx;
+                    float targetY = ny;
+                    for (int i = 0; i < enemies.Count; i++)
+                    {
+                        if (!enemyAlive[i]) continue;
+                        float dx = enemies[i].x - nx;
+                        float dy = enemies[i].y - ny;
+                        float d = (float)Math.Sqrt(dx * dx + dy * dy);
+                        if (d < closestDist) { closestDist = d; targetX = enemies[i].x; targetY = enemies[i].y; }
+                    }
+                    if (bossAlive)
+                    {
+                        float bdx = bossX - nx;
+                        float bdy = bossY - ny;
+                        float bd = (float)Math.Sqrt(bdx * bdx + bdy * bdy);
+                        if (bd < closestDist) { closestDist = bd; targetX = bossX; targetY = bossY; }
+                    }
+                    if (closestDist < float.MaxValue)
+                    {
+                        float dx = targetX - nx;
+                        float dy = targetY - ny;
+                        float d = (float)Math.Sqrt(dx * dx + dy * dy);
+                        if (d > 0)
+                        {
+                            // Very slow base turn rate, scaled by bullet speed
+                            float turn = 0.2f * (bulletSpeed / 8f);
+                            newVelX += (dx / d) * turn * deltaTime * 60;
+                            newVelY += (dy / d) * turn * deltaTime * 60;
+                            float speed2 = (float)Math.Sqrt(newVelX * newVelX + newVelY * newVelY);
+                            if (speed2 > bulletSpeed) { newVelX = (newVelX / speed2) * bulletSpeed; newVelY = (newVelY / speed2) * bulletSpeed; }
+                        }
+                    }
+                }
                 if (ricochetBounces > 0 && bounces < ricochetBounces)
                 {
                     if (nx < 0 || nx + bulletSize > ClientSize.Width) { newVelX = -newVelX; nx = b.x + newVelX * deltaTime * 60; bounces++; }
@@ -1575,6 +1645,15 @@ namespace gamething
                                 float dist = (float)Math.Sqrt(dx * dx + dy * dy);
                                 if (dist < ricochetExplosionRadius * scale)
                                     DamageEnemy(j, ricochetExplosionDamage, false);
+                            }
+                            if (bossAlive)
+                            {
+                                float bcx = bossX + bossSize * scale / 2;
+                                float bcy = bossY + bossSize * scale / 2;
+                                float bdx = bcx - nx;
+                                float bdy = bcy - ny;
+                                if (Math.Sqrt(bdx * bdx + bdy * bdy) < ricochetExplosionRadius * scale)
+                                    DamageBoss(ricochetExplosionDamage);
                             }
                             deathFlashes.Add((nx, ny, 0.3f, 0.3f, (int)(ricochetExplosionRadius * scale)));
                         }
@@ -1713,8 +1792,17 @@ namespace gamething
             }
             if (wallCooldown > 0) wallCooldown -= deltaTime;
             if (hitCooldown > 0) hitCooldown -= deltaTime;
-            regenTimer += deltaTime;
-            if (regenTimer >= regenTime) { health = Math.Min(health + 1f, maxHealth); regenTimer = 0f; }
+            // Don't tick regen for a dead player (single or multi). Otherwise the
+            // dead player keeps gaining health silently.
+            if (!hostDead && health > 0)
+            {
+                regenTimer += deltaTime;
+                if (regenTimer >= regenTime) { health = Math.Min(health + 1f, maxHealth); regenTimer = 0f; }
+            }
+            else
+            {
+                regenTimer = 0f;
+            }
 
             // Orbit
             if (orbitCount > 0)
@@ -1750,6 +1838,15 @@ namespace gamething
                                     if (dist < explosiveOrbitRadius * scale)
                                         DamageEnemy(j, explosiveOrbitDamage, false);
                                 }
+                                if (bossAlive)
+                                {
+                                    float bcx = bossX + bossSize * scale / 2;
+                                    float bcy = bossY + bossSize * scale / 2;
+                                    float bdx = bcx - (enemies[i].x + boxSize / 2);
+                                    float bdy = bcy - (enemies[i].y + boxSize / 2);
+                                    if (Math.Sqrt(bdx * bdx + bdy * bdy) < explosiveOrbitRadius * scale)
+                                        DamageBoss(explosiveOrbitDamage);
+                                }
                             }
                         }
                     }
@@ -1766,6 +1863,49 @@ namespace gamething
             }
             if (bossOrbitHitCooldown > 0)
                 bossOrbitHitCooldown -= deltaTime;
+
+            // Flame wall damages the boss too
+            if (bossAlive && flameWall && wallActive)
+            {
+                bool bossTouchingFlame = false;
+                float bs = bossSize * scale;
+                if (boxWall && boxWalls.Count > 0)
+                {
+                    foreach (var bw in boxWalls)
+                    {
+                        float bwLeft = bw.x - bw.width / 2 - bs;
+                        float bwRight = bw.x + bw.width / 2 + bs;
+                        float bwTop = bw.y - bw.height / 2 - bs;
+                        float bwBottom = bw.y + bw.height / 2 + bs;
+                        if (bossX < bwRight && bossX + bs > bwLeft &&
+                            bossY < bwBottom && bossY + bs > bwTop)
+                        { bossTouchingFlame = true; break; }
+                    }
+                }
+                else
+                {
+                    float wLeft = tempWall.x - tempWall.width / 2 - bs;
+                    float wRight = tempWall.x + tempWall.width / 2 + bs;
+                    float wTop = tempWall.y - tempWall.height / 2 - bs;
+                    float wBottom = tempWall.y + tempWall.height / 2 + bs;
+                    if (bossX < wRight && bossX + bs > wLeft &&
+                        bossY < wBottom && bossY + bs > wTop)
+                        bossTouchingFlame = true;
+                }
+                if (bossTouchingFlame)
+                {
+                    bossFlameTimer += deltaTime;
+                    if (bossFlameTimer >= flameWallDamageRate)
+                    {
+                        bossFlameTimer = 0f;
+                        DamageBoss(flameWallDamage);
+                    }
+                }
+                else
+                    bossFlameTimer = 0f;
+            }
+            else
+                bossFlameTimer = 0f;
             for (int i = orbitalSlowTimers.Count - 1; i >= 0; i--)
             {
                 orbitalSlowTimers[i] -= deltaTime;
@@ -1859,7 +1999,9 @@ namespace gamething
                             AimX = mousePos.X / cw,
                             AimY = mousePos.Y / ch,
                             Shooting = mouseHeld,
-                            Dashing = isDashing,
+                            // Dashing is now used as a one-shot trigger from the client,
+                            // not a continuous state — host owns the dash simulation for p2.
+                            Dashing = p2PendingDash,
                             ActivateSuper = p2PendingSuper,
                             ActivateWall = p2PendingWall,
                             WallAimX = mousePos.X / cw,
@@ -1868,6 +2010,7 @@ namespace gamething
                         };
                         p2PendingSuper = false;
                         p2PendingWall = false;
+                        p2PendingDash = false;
                         p2PendingUpgrade = -1;
                         netManager.SendPlayerInput(input);
 
@@ -1978,6 +2121,13 @@ namespace gamething
                     int bSize = (int)(8 * scale);
                     e.Graphics.FillRectangle(Brushes.White, menuBulletX - bSize / 2, menuBulletY - bSize / 2, bSize, bSize);
                 }
+                // Dark overlay for panel-based popups
+                if (showDimOverlay)
+                {
+                    e.Graphics.FillRectangle(
+                        new SolidBrush(Color.FromArgb(180, 0, 0, 0)),
+                        0, 0, ClientSize.Width, ClientSize.Height);
+                }
                 // Draw preferences
                 if (onPreferences)
                 {
@@ -2041,7 +2191,7 @@ namespace gamething
                         new RectangleF(panelX + 20, panelY + 360 * scaleY, panelW, 25 * scaleY),
                         new StringFormat { Alignment = StringAlignment.Near });
                 }
-                if (!onPreferences)
+                if (!onPreferences && !showDimOverlay)
                 {
                     var dLabels = new[] { "⭐ Easy", "⭐⭐ Normal", "⭐⭐⭐ Hard", "💀 Nightmare" };
                     var dColors = new[] { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
@@ -2271,17 +2421,17 @@ namespace gamething
                 using (var nameBrush = new SolidBrush(Color.FromArgb(180, 80, 140, 255)))
                 {
                     e.Graphics.DrawString(p2Name, GetFontSmall(), nameBrush,
-                        p2X + playerSize / 2 - 20, p2Y - 18);
+                        p2X + playerSize / 2 - 20 * scale, p2Y - 18 * scale);
                 }
                 // P2 health bar
                 if (p2MaxHealth > 0)
                 {
-                    float hbW = playerSize + 10;
-                    float hbX = p2X - 5;
-                    float hbY = p2Y + playerSize + 4;
+                    float hbW = playerSize + 10 * scale;
+                    float hbX = p2X - 5 * scale;
+                    float hbY = p2Y + playerSize + 4 * scale;
                     float p2HpFill = Math.Max(0, p2Health / p2MaxHealth);
-                    e.Graphics.FillRectangle(Brushes.DarkGray, hbX, hbY, hbW, 4);
-                    e.Graphics.FillRectangle(Brushes.DodgerBlue, hbX, hbY, hbW * p2HpFill, 4);
+                    e.Graphics.FillRectangle(Brushes.DarkGray, hbX, hbY, hbW, 4 * scale);
+                    e.Graphics.FillRectangle(Brushes.DodgerBlue, hbX, hbY, hbW * p2HpFill, 4 * scale);
                 }
             }
 
@@ -2328,29 +2478,31 @@ namespace gamething
                     float maxEHp = isTank ? 8f : canShoot ? 4f : isRunner ? 1f : 2f;
                     float enemyHpFill = enemyHealth[i] / maxEHp;
                     int enemyBarW = eSize;
-                    int enemyBarH = 4;
+                    float enemyBarH = 4 * scale;
                     float enemyBarX = enemies[i].x;
-                    float enemyBarY = enemies[i].y - 8;
+                    float enemyBarY = enemies[i].y - 8 * scale;
                     e.Graphics.FillRectangle(Brushes.DarkRed, enemyBarX, enemyBarY, enemyBarW, enemyBarH);
                     e.Graphics.FillRectangle(Brushes.LimeGreen, enemyBarX, enemyBarY, enemyBarW * enemyHpFill, enemyBarH);
                     e.Graphics.DrawRectangle(borderPen, enemyBarX, enemyBarY, enemyBarW, enemyBarH);
                 }
 
                 // Effect indicators
+                float ringOff = 3 * scale;
+                float ringSize = eSize + 6 * scale;
                 if (i < enemyIsArmored.Count && enemyIsArmored[i] && !enemyArmorBroken[i])
                 {
-                    e.Graphics.DrawEllipse(new Pen(Color.Silver, 3),
-                        enemies[i].x - 3, enemies[i].y - 3, eSize + 6, eSize + 6);
+                    e.Graphics.DrawEllipse(new Pen(Color.Silver, 3 * scale),
+                        enemies[i].x - ringOff, enemies[i].y - ringOff, ringSize, ringSize);
                 }
                 if (i < enemyIsCharging.Count && enemyIsCharging[i] && i < enemyIsCharging_Active.Count && enemyIsCharging_Active[i])
                 {
-                    e.Graphics.DrawEllipse(new Pen(Color.Yellow, 2),
-                        enemies[i].x - 3, enemies[i].y - 3, eSize + 6, eSize + 6);
+                    e.Graphics.DrawEllipse(new Pen(Color.Yellow, 2 * scale),
+                        enemies[i].x - ringOff, enemies[i].y - ringOff, ringSize, ringSize);
                 }
                 if (i < enemyIsReflective.Count && enemyIsReflective[i])
                 {
-                    e.Graphics.DrawEllipse(new Pen(Color.FromArgb(100, 200, 200, 255), 2),
-                        enemies[i].x - 2, enemies[i].y - 2, eSize + 4, eSize + 4);
+                    e.Graphics.DrawEllipse(new Pen(Color.FromArgb(100, 200, 200, 255), 2 * scale),
+                        enemies[i].x - 2 * scale, enemies[i].y - 2 * scale, eSize + 4 * scale, eSize + 4 * scale);
                 }
                 if (i < enemyIsBerserker.Count && enemyIsBerserker[i])
                 {
@@ -2358,8 +2510,8 @@ namespace gamething
                     if (i < enemyHealth.Count && enemyHealth[i] < maxHpDraw * 0.5f)
                     {
                         float pulse = (float)Math.Abs(Math.Sin(gameStartTimer * 8f));
-                        e.Graphics.DrawEllipse(new Pen(Color.FromArgb((int)(pulse * 255), 255, 50, 0), 2),
-                            enemies[i].x - 3, enemies[i].y - 3, eSize + 6, eSize + 6);
+                        e.Graphics.DrawEllipse(new Pen(Color.FromArgb((int)(pulse * 255), 255, 50, 0), 2 * scale),
+                            enemies[i].x - ringOff, enemies[i].y - ringOff, ringSize, ringSize);
                     }
                 }
                 if (i < enemyIsRegenerating.Count && enemyIsRegenerating[i])
@@ -2978,15 +3130,17 @@ namespace gamething
             bullets.Clear();
             score = 0;
             coins = new List<(float x, float y, float velX, float velY)>();
-            scoreTimer = 0f; shootCooldown = 0f; gameStartTimer = 0f;
+            scoreTimer = 0f; shootCooldown = 0f; gameStartTimer = 0f; bulletSpeed = 15f * scale;
             superActive = false; superTimer = 0f; superCooldown = 0f; superCooldownTime = 90f;
             mouseHeld = false; wallActive = false; wallTimer = 0f; wallCooldown = 0f;
             maxAmmo = 60; ammo = maxAmmo; reloading = false; reloadTimer = 0f;
             maxHealth = 50f; health = maxHealth; hitCooldown = 0f; regenTimer = 0f;
             dashCooldown = 0f; lifeSteal = 0; fireRateBonus = 0f; scorePerSecond = 1;
             reloadTime = 5f; dashDuration = 0.7f; wallDuration = 20f;
-            ghostDash = false; ricochetBounces = 0;
-            bulletSize = (int)(6 * scale);
+            ghostDash = false; ricochetBounces = 0; smartBounce = false;
+            bulletSize = (int)(6 * scale); coinSize = (int)(6 * scale);
+            enemyBulletSize = (int)(10 * scale); enemyBulletSpeed = 12f * scale;
+            bossBulletSpeed = 40f * scale;
             afterburn = false; isAfterburn = false; afterburnTimer = 0f;
             blink = false; blinkCooldown = 0f; jackpot = false;
             speed = 4.8f * scale; playerSize = (int)(30 * scale);
@@ -3005,6 +3159,7 @@ namespace gamething
             boxWall = false; boxWalls.Clear();
             hostDead = false; p2Dead = false;
             p2PendingUpgrade = -1; p2PendingSuper = false; p2PendingWall = false;
+            p2Dashing = false; p2DashTimer = 0f; p2DashVelX = 0f; p2DashVelY = 0f; p2DashCooldown = 0f;
             runnerEnemyChance = 0.05f;
             medic = false; doubleTap = false; doubleTapCounter = 0;
             explosiveFinish = false; nextBulletIsLast = false;
@@ -3019,6 +3174,7 @@ namespace gamething
             bossShootTimer = 0f;
             bossBulletHitCooldown = 0f;
             bossOrbitHitCooldown = 0f;
+            bossFlameTimer = 0f;
             bossesDefeated = 0;
             gameStartTimer = 0f;
             turret = false;
@@ -3178,19 +3334,40 @@ namespace gamething
 
         private void ShowUpgradeMenu()
         {
-            Form upgradeForm = new Form();
-            upgradeForm.Text = "Upgrades";
-            upgradeForm.Size = new Size(900, 490);
-            upgradeForm.StartPosition = FormStartPosition.CenterScreen;
+            int formW = Math.Min(ClientSize.Width - 40, (int)(900 * scale));
+            int formH = Math.Min(ClientSize.Height - 40, (int)(490 * scale));
+
+            Panel upgradeForm = new Panel();
+            upgradeForm.Size = new Size(formW, formH);
+            upgradeForm.Location = new Point((ClientSize.Width - formW) / 2, (ClientSize.Height - formH) / 2);
             upgradeForm.BackColor = Color.FromArgb(30, 30, 30);
-            upgradeForm.FormBorderStyle = FormBorderStyle.FixedDialog;
-            upgradeForm.MaximizeBox = false;
+            typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(upgradeForm, true);
+            upgradeForm.Paint += (s, pe) =>
+            {
+                var g = pe.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                int r = (int)(14 * scale);
+                var rect = new Rectangle(0, 0, upgradeForm.Width - 1, upgradeForm.Height - 1);
+                using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                path.AddArc(rect.X, rect.Y, r, r, 180, 90);
+                path.AddArc(rect.Right - r, rect.Y, r, r, 270, 90);
+                path.AddArc(rect.Right - r, rect.Bottom - r, r, r, 0, 90);
+                path.AddArc(rect.X, rect.Bottom - r, r, r, 90, 90);
+                path.CloseFigure();
+                using var bgBrush = new SolidBrush(Color.FromArgb(240, 22, 22, 32));
+                g.FillPath(bgBrush, path);
+                using var borderPen2 = new Pen(Color.FromArgb(100, 70, 70, 120), 2 * scale);
+                g.DrawPath(borderPen2, path);
+            };
+
+            float s = scale;
 
             Button upgradesNavBtn = new Button();
             upgradesNavBtn.Text = "⚔ Upgrades";
-            upgradesNavBtn.Size = new Size(120, 30);
-            upgradesNavBtn.Location = new Point(20, 10);
+            upgradesNavBtn.Size = new Size((int)(120 * s), (int)(30 * s));
+            upgradesNavBtn.Location = new Point((int)(20 * s), (int)(10 * s));
             upgradesNavBtn.FlatStyle = FlatStyle.Flat;
+            upgradesNavBtn.Font = new Font("Arial", Math.Max(1, (int)(9 * s)));
             upgradesNavBtn.ForeColor = Color.White;
             upgradesNavBtn.BackColor = Color.FromArgb(80, 80, 130);
             upgradesNavBtn.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 80);
@@ -3198,9 +3375,10 @@ namespace gamething
 
             Button colorNavBtn = new Button();
             colorNavBtn.Text = "🎨 Preferences";
-            colorNavBtn.Size = new Size(120, 30);
-            colorNavBtn.Location = new Point(150, 10);
+            colorNavBtn.Size = new Size((int)(120 * s), (int)(30 * s));
+            colorNavBtn.Location = new Point((int)(150 * s), (int)(10 * s));
             colorNavBtn.FlatStyle = FlatStyle.Flat;
+            colorNavBtn.Font = new Font("Arial", Math.Max(1, (int)(9 * s)));
             colorNavBtn.ForeColor = Color.White;
             colorNavBtn.BackColor = Color.FromArgb(50, 50, 50);
             colorNavBtn.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 80);
@@ -3208,16 +3386,17 @@ namespace gamething
 
             Label scoreLabel = new Label();
             scoreLabel.Text = "💲: " + score;
-            scoreLabel.Font = new Font("Arial", 12, FontStyle.Bold);
+            scoreLabel.Font = new Font("Arial", Math.Max(1, (int)(12 * s)), FontStyle.Bold);
             scoreLabel.ForeColor = Color.Gold;
-            scoreLabel.Size = new Size(500, 30);
-            scoreLabel.Location = new Point(300, 10);
+            scoreLabel.Size = new Size((int)(500 * s), (int)(30 * s));
+            scoreLabel.Location = new Point((int)(300 * s), (int)(10 * s));
             upgradeForm.Controls.Add(scoreLabel);
 
             Button darkModeBtn = new Button();
             darkModeBtn.Text = darkMode ? "☀ Light Mode" : "🌙 Dark Mode";
-            darkModeBtn.Size = new Size(120, 30);
-            darkModeBtn.Location = new Point(upgradeForm.ClientSize.Width - 140, 10);
+            darkModeBtn.Size = new Size((int)(120 * s), (int)(30 * s));
+            darkModeBtn.Font = new Font("Arial", Math.Max(1, (int)(9 * s)));
+            darkModeBtn.Location = new Point(upgradeForm.Width - (int)(140 * s), (int)(10 * s));
             darkModeBtn.BackColor = darkMode ? Color.FromArgb(200, 200, 200) : Color.FromArgb(50, 50, 50);
             darkModeBtn.ForeColor = darkMode ? Color.Black : Color.White;
             darkModeBtn.FlatStyle = FlatStyle.Flat;
@@ -3279,35 +3458,38 @@ namespace gamething
                 new { Title = "Blood Money",        Icon = "🩸", Description = "Gain 1 coin per HP lost",             Cost = 1100, Stack = "", Category = "Economy"  },
                 new { Title = "Parasite Immune",    Icon = "🧬", Description = "Parasites can't hurt you",             Cost = 1200, Stack = "", Category = "Defensive"},
                 new { Title = "Last Stand", Icon = "💢", Description = "Below 15 HP: bullets deal 2x damage", Cost = 1100, Stack = "", Category = "Offensive" },
+                new { Title = "Smart Bounce",    Icon = "🧠", Description = "+1 bounce; bounced bullets seek nearest enemy", Cost = 1220, Stack = "", Category = "Offensive" },
             };
 
-            int cardWidth = 155;
-            int cardHeight = 290;
-            int totalWidth = upgrades.Length * (cardWidth + 15) + 15;
+            int cardWidth = (int)(155 * s);
+            int cardHeight = (int)(290 * s);
+            int cardGap = (int)(15 * s);
+            int totalWidth = upgrades.Length * (cardWidth + cardGap) + cardGap;
             int scrollOffset = 0;
-            int scrollStep = cardWidth + 15;
-            int maxScroll = Math.Max(0, totalWidth - 800);
+            int scrollStep = cardWidth + cardGap;
+            int scrollPanelW = (int)(800 * s);
+            int maxScroll = Math.Max(0, totalWidth - scrollPanelW);
             string selectedCategory = "All";
 
             var categories = new[] { "All", "Offensive", "Defensive", "Economy", "Cooldown" };
             List<Button> tabButtons = new List<Button>();
-            int tabX = 20;
+            int tabX = (int)(20 * s);
 
             Panel scrollPanel = new Panel();
-            scrollPanel.Size = new Size(800, cardHeight + 10);
-            scrollPanel.Location = new Point(50, 80);
+            scrollPanel.Size = new Size(scrollPanelW, cardHeight + (int)(10 * s));
+            scrollPanel.Location = new Point((int)(50 * s), (int)(80 * s));
             scrollPanel.BackColor = Color.FromArgb(30, 30, 30);
             upgradeForm.Controls.Add(scrollPanel);
 
             Panel innerPanel = new Panel();
-            innerPanel.Size = new Size(totalWidth, cardHeight + 10);
+            innerPanel.Size = new Size(totalWidth, cardHeight + (int)(10 * s));
             innerPanel.Location = new Point(0, 0);
             innerPanel.BackColor = Color.FromArgb(30, 30, 30);
             scrollPanel.Controls.Add(innerPanel);
 
             Panel colorPanel = new Panel();
-            colorPanel.Size = new Size(860, 370);
-            colorPanel.Location = new Point(20, 80);
+            colorPanel.Size = new Size((int)(860 * s), (int)(370 * s));
+            colorPanel.Location = new Point((int)(20 * s), (int)(80 * s));
             colorPanel.BackColor = Color.FromArgb(30, 30, 30);
             colorPanel.Visible = false;
             upgradeForm.Controls.Add(colorPanel);
@@ -3330,14 +3512,14 @@ namespace gamething
 
             Label colorTitle = new Label();
             colorTitle.Text = "Choose Player Color";
-            colorTitle.Font = new Font("Arial", 14, FontStyle.Bold);
+            colorTitle.Font = new Font("Arial", Math.Max(1, (int)(14 * s)), FontStyle.Bold);
             colorTitle.ForeColor = Color.White;
-            colorTitle.Size = new Size(400, 30);
-            colorTitle.Location = new Point(20, 10);
+            colorTitle.Size = new Size((int)(400 * s), (int)(30 * s));
+            colorTitle.Location = new Point((int)(20 * s), (int)(10 * s));
             colorPanel.Controls.Add(colorTitle);
 
             Panel previewBox = new Panel();
-            previewBox.Size = new Size(60, 60);
+            previewBox.Size = new Size((int)(60 * s), (int)(60 * s));
             previewBox.BackColor = playerColor;
             previewBox.BorderStyle = BorderStyle.FixedSingle;
             colorPanel.Controls.Add(previewBox);
@@ -3345,52 +3527,56 @@ namespace gamething
             Label previewLabel = new Label();
             previewLabel.Text = "Preview";
             previewLabel.ForeColor = Color.LightGray;
-            previewLabel.Font = new Font("Arial", 9);
-            previewLabel.Size = new Size(60, 20);
+            previewLabel.Font = new Font("Arial", Math.Max(1, (int)(9 * s)));
+            previewLabel.Size = new Size((int)(60 * s), (int)(20 * s));
             previewLabel.TextAlign = ContentAlignment.MiddleCenter;
             colorPanel.Controls.Add(previewLabel);
 
-            int colorX = 20;
-            int colorY = 50;
+            int colorX = (int)(20 * s);
+            int colorY = (int)(50 * s);
+            int colorBtnSize = (int)(80 * s);
+            int colorSpacing = (int)(90 * s);
+            int colorMaxX = (int)(650 * s);
             foreach (var preset in presetColors)
             {
                 var capturedColor = preset.Color;
                 var capturedName = preset.Name;
                 Panel colorBtn = new Panel();
-                colorBtn.Size = new Size(80, 80);
+                colorBtn.Size = new Size(colorBtnSize, colorBtnSize);
                 colorBtn.Location = new Point(colorX, colorY);
                 colorBtn.BackColor = preset.Color;
                 colorBtn.Cursor = Cursors.Hand;
                 colorBtn.BorderStyle = BorderStyle.FixedSingle;
                 Label colorName = new Label();
                 colorName.Text = capturedName;
-                colorName.Font = new Font("Arial", 8);
+                colorName.Font = new Font("Arial", Math.Max(1, (int)(8 * s)));
                 colorName.ForeColor = Color.White;
                 colorName.BackColor = Color.Transparent;
                 colorName.TextAlign = ContentAlignment.BottomCenter;
-                colorName.Size = new Size(80, 80);
+                colorName.Size = new Size(colorBtnSize, colorBtnSize);
                 colorName.Location = new Point(0, 0);
                 colorBtn.Controls.Add(colorName);
-                colorBtn.Click += (s, e) => { playerColor = capturedColor; previewBox.BackColor = capturedColor; };
-                colorName.Click += (s, e) => { playerColor = capturedColor; previewBox.BackColor = capturedColor; };
-                colorBtn.MouseEnter += (s, e) => colorBtn.BorderStyle = BorderStyle.Fixed3D;
-                colorBtn.MouseLeave += (s, e) => colorBtn.BorderStyle = BorderStyle.FixedSingle;
+                colorBtn.Click += (ss, ee) => { playerColor = capturedColor; previewBox.BackColor = capturedColor; };
+                colorName.Click += (ss, ee) => { playerColor = capturedColor; previewBox.BackColor = capturedColor; };
+                colorBtn.MouseEnter += (ss, ee) => colorBtn.BorderStyle = BorderStyle.Fixed3D;
+                colorBtn.MouseLeave += (ss, ee) => colorBtn.BorderStyle = BorderStyle.FixedSingle;
                 colorPanel.Controls.Add(colorBtn);
-                colorX += 90;
-                if (colorX > 650) { colorX = 20; colorY += 90; }
+                colorX += colorSpacing;
+                if (colorX > colorMaxX) { colorX = (int)(20 * s); colorY += colorSpacing; }
             }
 
-            previewBox.Location = new Point(20, colorY + 95);
-            previewLabel.Location = new Point(20, colorY + 158);
+            previewBox.Location = new Point((int)(20 * s), colorY + (int)(95 * s));
+            previewLabel.Location = new Point((int)(20 * s), colorY + (int)(158 * s));
 
             Button customColorBtn = new Button();
             customColorBtn.Text = "🎨 Custom Color...";
-            customColorBtn.Size = new Size(160, 35);
-            customColorBtn.Location = new Point(100, colorY + 95);
+            customColorBtn.Size = new Size((int)(160 * s), (int)(35 * s));
+            customColorBtn.Font = new Font("Arial", Math.Max(1, (int)(9 * s)));
+            customColorBtn.Location = new Point((int)(100 * s), colorY + (int)(95 * s));
             customColorBtn.FlatStyle = FlatStyle.Flat;
             customColorBtn.ForeColor = Color.White;
             customColorBtn.BackColor = Color.FromArgb(60, 60, 60);
-            customColorBtn.Click += (s, e) =>
+            customColorBtn.Click += (ss, ee) =>
             {
                 using ColorDialog cd = new ColorDialog();
                 cd.Color = playerColor;
@@ -3400,22 +3586,22 @@ namespace gamething
 
             Label nameLabel = new Label();
             nameLabel.Text = "Player Name:";
-            nameLabel.Font = new Font("Arial", 10, FontStyle.Bold);
+            nameLabel.Font = new Font("Arial", Math.Max(1, (int)(10 * s)), FontStyle.Bold);
             nameLabel.ForeColor = Color.White;
-            nameLabel.Size = new Size(120, 25);
-            nameLabel.Location = new Point(20, colorY + 140);
+            nameLabel.Size = new Size((int)(120 * s), (int)(25 * s));
+            nameLabel.Location = new Point((int)(20 * s), colorY + (int)(140 * s));
             colorPanel.Controls.Add(nameLabel);
 
             TextBox nameBox = new TextBox();
             nameBox.Text = playerName;
-            nameBox.Font = new Font("Arial", 10);
-            nameBox.Size = new Size(150, 25);
-            nameBox.Location = new Point(150, colorY + 140);
+            nameBox.Font = new Font("Arial", Math.Max(1, (int)(10 * s)));
+            nameBox.Size = new Size((int)(150 * s), (int)(25 * s));
+            nameBox.Location = new Point((int)(150 * s), colorY + (int)(140 * s));
             nameBox.MaxLength = 8;
             nameBox.BackColor = Color.FromArgb(50, 50, 50);
             nameBox.ForeColor = Color.White;
             nameBox.BorderStyle = BorderStyle.FixedSingle;
-            nameBox.TextChanged += (s, e) =>
+            nameBox.TextChanged += (ss, ee) =>
             {
                 string input = nameBox.Text.Trim().ToUpper();
                 if (!string.IsNullOrWhiteSpace(input) && input != "YOU")
@@ -3434,10 +3620,10 @@ namespace gamething
 
             Label nameLimitLabel = new Label();
             nameLimitLabel.Text = "Max 8 characters";
-            nameLimitLabel.Font = new Font("Arial", 8);
+            nameLimitLabel.Font = new Font("Arial", Math.Max(1, (int)(8 * s)));
             nameLimitLabel.ForeColor = Color.Gray;
-            nameLimitLabel.Size = new Size(150, 20);
-            nameLimitLabel.Location = new Point(150, colorY + 168);
+            nameLimitLabel.Size = new Size((int)(150 * s), (int)(20 * s));
+            nameLimitLabel.Location = new Point((int)(150 * s), colorY + (int)(168 * s));
             colorPanel.Controls.Add(nameLimitLabel);
 
             void RefreshCardPositions()
@@ -3449,10 +3635,10 @@ namespace gamething
                     {
                         bool show = selectedCategory == "All" || c.AccessibleName == selectedCategory;
                         c.Visible = show;
-                        if (show) { c.Location = new Point(15 + visibleIndex * (cardWidth + 15), 5); visibleIndex++; }
+                        if (show) { c.Location = new Point(cardGap + visibleIndex * (cardWidth + cardGap), (int)(5 * s)); visibleIndex++; }
                     }
                 }
-                int newTotal = Math.Max(visibleIndex * (cardWidth + 15) + 15, scrollPanel.Width);
+                int newTotal = Math.Max(visibleIndex * (cardWidth + cardGap) + cardGap, scrollPanel.Width);
                 innerPanel.Width = newTotal;
                 maxScroll = Math.Max(0, newTotal - scrollPanel.Width);
                 scrollOffset = 0;
@@ -3464,13 +3650,14 @@ namespace gamething
                 string capturedCat = cat;
                 Button tab = new Button();
                 tab.Text = cat;
-                tab.Size = new Size(80, 25);
-                tab.Location = new Point(tabX, 45);
+                tab.Size = new Size((int)(80 * s), (int)(25 * s));
+                tab.Location = new Point(tabX, (int)(45 * s));
                 tab.FlatStyle = FlatStyle.Flat;
+                tab.Font = new Font("Arial", Math.Max(1, (int)(8 * s)));
                 tab.ForeColor = Color.White;
                 tab.BackColor = cat == "All" ? Color.FromArgb(80, 80, 130) : Color.FromArgb(50, 50, 50);
                 tab.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 80);
-                tab.Click += (s, e) =>
+                tab.Click += (ss, ee) =>
                 {
                     selectedCategory = capturedCat;
                     foreach (var tb in tabButtons) tb.BackColor = Color.FromArgb(50, 50, 50);
@@ -3480,7 +3667,7 @@ namespace gamething
                 tabButtons.Add(tab);
                 upgradeForm.Controls.Add(tab);
                 tab.BringToFront();
-                tabX += 85;
+                tabX += (int)(85 * s);
             }
 
             System.Windows.Forms.Timer colorTimer = new System.Windows.Forms.Timer();
@@ -3506,7 +3693,7 @@ namespace gamething
                 scoreLabel.Text = "💲: " + score;
             };
             colorTimer.Start();
-            upgradeForm.FormClosed += (s, e) => colorTimer.Stop();
+            // colorTimer cleanup handled in close click
 
             var sortedUpgrades = upgrades
                 .Select((u, idx) => new { Upgrade = u, OriginalIndex = idx })
@@ -3525,70 +3712,70 @@ namespace gamething
 
                 Panel card = new Panel();
                 card.Size = new Size(cardWidth, cardHeight);
-                card.Location = new Point(15 + i * (cardWidth + 15), 5);
+                card.Location = new Point(cardGap + i * (cardWidth + cardGap), (int)(5 * s));
                 card.BackColor = alreadyPurchased ? Color.FromArgb(25, 25, 25) : score >= cost ? Color.FromArgb(50, 50, 80) : Color.FromArgb(40, 40, 40);
                 card.Cursor = alreadyPurchased ? Cursors.Default : score >= cost ? Cursors.Hand : Cursors.Default;
                 card.Tag = alreadyPurchased ? int.MaxValue : cost;
                 card.AccessibleName = category;
 
                 Panel categoryBar = new Panel();
-                categoryBar.Size = new Size(cardWidth, 8);
+                categoryBar.Size = new Size(cardWidth, (int)(8 * s));
                 categoryBar.Location = new Point(0, 0);
                 categoryBar.BackColor = catColor;
                 card.Controls.Add(categoryBar);
 
                 Label title = new Label();
                 title.Text = upgrade.Title;
-                title.Font = new Font("Arial", 10, FontStyle.Bold);
+                title.Font = new Font("Arial", Math.Max(1, (int)(10 * s)), FontStyle.Bold);
                 title.ForeColor = Color.White;
                 title.TextAlign = ContentAlignment.MiddleCenter;
-                title.Size = new Size(cardWidth, 40);
-                title.Location = new Point(0, 10);
+                title.Size = new Size(cardWidth, (int)(40 * s));
+                title.Location = new Point(0, (int)(10 * s));
                 title.AutoSize = false;
 
                 Label icon = new Label();
                 icon.Text = upgrade.Icon;
-                icon.Font = new Font("Segoe UI Emoji", 34);
+                icon.Font = new Font("Segoe UI Emoji", Math.Max(1, (int)(34 * s)));
                 icon.ForeColor = Color.White;
                 icon.TextAlign = ContentAlignment.MiddleCenter;
-                icon.Size = new Size(cardWidth, 100);
-                icon.Location = new Point(0, 55);
+                icon.Size = new Size(cardWidth, (int)(100 * s));
+                icon.Location = new Point(0, (int)(55 * s));
                 icon.AutoSize = false;
 
                 Label desc = new Label();
                 desc.Text = upgrade.Description;
-                desc.Font = new Font("Arial", 9);
+                desc.Font = new Font("Arial", Math.Max(1, (int)(9 * s)));
                 desc.ForeColor = Color.LightGray;
                 desc.TextAlign = ContentAlignment.MiddleCenter;
-                desc.Size = new Size(cardWidth - 10, 60);
-                desc.Location = new Point(5, 155);
+                desc.Size = new Size(cardWidth - (int)(10 * s), (int)(60 * s));
+                desc.Location = new Point((int)(5 * s), (int)(155 * s));
                 desc.AutoSize = false;
 
                 Label stacking = new Label();
                 stacking.Text = upgrade.Stack;
-                stacking.Font = new Font("Arial", 7);
+                stacking.Font = new Font("Arial", Math.Max(1, (int)(7 * s)));
                 stacking.ForeColor = Color.LightGray;
                 stacking.TextAlign = ContentAlignment.MiddleCenter;
-                stacking.Size = new Size(cardWidth - 10, 20);
-                stacking.Location = new Point(5, 210);
+                stacking.Size = new Size(cardWidth - (int)(10 * s), (int)(20 * s));
+                stacking.Location = new Point((int)(5 * s), (int)(210 * s));
                 stacking.AutoSize = false;
 
                 Label categoryLabel = new Label();
                 categoryLabel.Text = GetCategoryIcon(category) + " " + category;
-                categoryLabel.Font = new Font("Segoe UI Emoji", 7);
+                categoryLabel.Font = new Font("Segoe UI Emoji", Math.Max(1, (int)(7 * s)));
                 categoryLabel.ForeColor = Color.FromArgb(180, 180, 180);
                 categoryLabel.TextAlign = ContentAlignment.MiddleCenter;
-                categoryLabel.Size = new Size(cardWidth, 20);
-                categoryLabel.Location = new Point(0, 230);
+                categoryLabel.Size = new Size(cardWidth, (int)(20 * s));
+                categoryLabel.Location = new Point(0, (int)(230 * s));
                 categoryLabel.AutoSize = false;
 
                 Label costLabel = new Label();
                 costLabel.Text = cost + " pts";
-                costLabel.Font = new Font("Arial", 9, FontStyle.Bold);
+                costLabel.Font = new Font("Arial", Math.Max(1, (int)(9 * s)), FontStyle.Bold);
                 costLabel.ForeColor = score >= cost ? Color.Gold : Color.Gray;
                 costLabel.TextAlign = ContentAlignment.MiddleCenter;
-                costLabel.Size = new Size(cardWidth, 30);
-                costLabel.Location = new Point(0, 253);
+                costLabel.Size = new Size(cardWidth, (int)(30 * s));
+                costLabel.Location = new Point(0, (int)(253 * s));
                 costLabel.AutoSize = false;
 
                 card.Controls.Add(title);
@@ -3608,7 +3795,7 @@ namespace gamething
                     if (isMultiplayer && !isNetHost)
                     {
                         p2PendingUpgrade = index;
-                        // Don't apply locally — host will apply and sync via GameState
+                        score -= cost; // deduct locally so UI updates immediately
                     }
                     else
                     {
@@ -3635,23 +3822,25 @@ namespace gamething
 
             Button scrollLeft = new Button();
             scrollLeft.Text = "◀";
-            scrollLeft.Size = new Size(40, cardHeight + 10);
-            scrollLeft.Location = new Point(5, 80);
+            scrollLeft.Size = new Size((int)(40 * s), cardHeight + (int)(10 * s));
+            scrollLeft.Location = new Point((int)(5 * s), (int)(80 * s));
             scrollLeft.BackColor = Color.FromArgb(50, 50, 50);
             scrollLeft.ForeColor = Color.White;
+            scrollLeft.Font = new Font("Arial", Math.Max(1, (int)(10 * s)));
             scrollLeft.FlatStyle = FlatStyle.Flat;
-            scrollLeft.Click += (s, e) => { scrollOffset = Math.Max(0, scrollOffset - scrollStep); innerPanel.Location = new Point(-scrollOffset, 0); };
+            scrollLeft.Click += (ss, ee) => { scrollOffset = Math.Max(0, scrollOffset - scrollStep); innerPanel.Location = new Point(-scrollOffset, 0); };
             upgradeForm.Controls.Add(scrollLeft);
             scrollLeft.BringToFront();
 
             Button scrollRight = new Button();
             scrollRight.Text = "▶";
-            scrollRight.Size = new Size(40, cardHeight + 10);
-            scrollRight.Location = new Point(855, 80);
+            scrollRight.Size = new Size((int)(40 * s), cardHeight + (int)(10 * s));
+            scrollRight.Location = new Point(formW - (int)(45 * s), (int)(80 * s));
             scrollRight.BackColor = Color.FromArgb(50, 50, 50);
             scrollRight.ForeColor = Color.White;
+            scrollRight.Font = new Font("Arial", Math.Max(1, (int)(10 * s)));
             scrollRight.FlatStyle = FlatStyle.Flat;
-            scrollRight.Click += (s, e) => { scrollOffset = Math.Min(maxScroll, scrollOffset + scrollStep); innerPanel.Location = new Point(-scrollOffset, 0); };
+            scrollRight.Click += (ss, ee) => { scrollOffset = Math.Min(maxScroll, scrollOffset + scrollStep); innerPanel.Location = new Point(-scrollOffset, 0); };
             upgradeForm.Controls.Add(scrollRight);
             scrollRight.BringToFront();
 
@@ -3675,15 +3864,20 @@ namespace gamething
 
             Button close = new Button();
             close.Text = "Close";
-            close.Size = new Size(100, 35);
-            close.Location = new Point(upgradeForm.ClientSize.Width / 2 - 50, 420);
+            close.Font = new Font("Arial", Math.Max(1, (int)(10 * s)), FontStyle.Bold);
+            close.Size = new Size((int)(100 * s), (int)(35 * s));
+            close.Location = new Point(upgradeForm.Width / 2 - (int)(50 * s), formH - (int)(60 * s));
             close.BackColor = Color.FromArgb(80, 30, 30);
             close.ForeColor = Color.White;
             close.FlatStyle = FlatStyle.Flat;
-            close.Click += (s, e) => upgradeForm.Close();
+            close.Click += (s, e) => { colorTimer.Stop(); this.Controls.Remove(upgradeForm); upgradeForm.Dispose(); activeUpgradePanel = null; showDimOverlay = false; this.Invalidate(); isPaused = false; velocityX = 0f; velocityY = 0f; HidePauseButtons(); this.Focus(); };
             upgradeForm.Controls.Add(close);
 
-            upgradeForm.ShowDialog();
+            showDimOverlay = true;
+            this.Invalidate();
+            activeUpgradePanel = upgradeForm;
+            this.Controls.Add(upgradeForm);
+            upgradeForm.BringToFront();
         }
 
         private void ApplyEnemyBuff()
@@ -3730,32 +3924,57 @@ namespace gamething
         private bool ShowDeathScreen()
         {
             bool retry = false;
-            Form deathForm = new Form();
-            deathForm.Text = "Game Over";
-            deathForm.Size = new Size(500, 420);
-            deathForm.StartPosition = FormStartPosition.CenterScreen;
-            deathForm.BackColor = Color.FromArgb(30, 30, 30);
-            deathForm.FormBorderStyle = FormBorderStyle.FixedDialog;
-            deathForm.MaximizeBox = false;
+            bool closed = false;
 
+            int formW = (int)(500 * scale);
+            int formH = (int)(380 * scale);
+            showDimOverlay = true;
+            this.Invalidate();
+
+            Panel deathForm = new Panel();
+            deathForm.Size = new Size(formW, formH);
+            deathForm.Location = new Point((ClientSize.Width - formW) / 2, (ClientSize.Height - formH) / 2);
+            typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(deathForm, true);
+            deathForm.BackColor = Color.Transparent;
+            deathForm.Paint += (s, pe) =>
+            {
+                var g = pe.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                int r = (int)(14 * scale);
+                var rect = new Rectangle(0, 0, deathForm.Width - 1, deathForm.Height - 1);
+                using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                path.AddArc(rect.X, rect.Y, r, r, 180, 90);
+                path.AddArc(rect.Right - r, rect.Y, r, r, 270, 90);
+                path.AddArc(rect.Right - r, rect.Bottom - r, r, r, 0, 90);
+                path.AddArc(rect.X, rect.Bottom - r, r, r, 90, 90);
+                path.CloseFigure();
+                using var bgBrush = new SolidBrush(Color.FromArgb(240, 22, 22, 32));
+                g.FillPath(bgBrush, path);
+                using var borderPen2 = new Pen(Color.FromArgb(120, 140, 40, 40), 2 * scale);
+                g.DrawPath(borderPen2, path);
+            };
+
+            float s = scale;
             Label titleLabel = new Label();
             titleLabel.Text = "GAME OVER";
-            titleLabel.Font = new Font("Arial", 28, FontStyle.Bold);
+            titleLabel.Font = new Font("Arial", (int)(28 * s), FontStyle.Bold);
             titleLabel.ForeColor = Color.FromArgb(200, 50, 50);
             titleLabel.TextAlign = ContentAlignment.MiddleCenter;
-            titleLabel.Size = new Size(460, 50);
-            titleLabel.Location = new Point(20, 20);
+            titleLabel.Size = new Size((int)(460 * s), (int)(50 * s));
+            titleLabel.Location = new Point((int)(20 * s), (int)(20 * s));
             deathForm.Controls.Add(titleLabel);
 
             Panel divider = new Panel();
-            divider.Size = new Size(440, 2);
-            divider.Location = new Point(30, 75);
+            divider.Size = new Size((int)(440 * s), 2);
+            divider.Location = new Point((int)(30 * s), (int)(75 * s));
             divider.BackColor = Color.FromArgb(80, 80, 80);
             deathForm.Controls.Add(divider);
 
+            int rowH = (int)(55 * s);
+            int rowW = (int)(440 * s);
             Panel statsPanel = new Panel();
-            statsPanel.Size = new Size(440, 180);
-            statsPanel.Location = new Point(30, 85);
+            statsPanel.Size = new Size(rowW, (int)(180 * s));
+            statsPanel.Location = new Point((int)(30 * s), (int)(85 * s));
             statsPanel.BackColor = Color.FromArgb(40, 40, 40);
             statsPanel.BorderStyle = BorderStyle.None;
             deathForm.Controls.Add(statsPanel);
@@ -3772,34 +3991,34 @@ namespace gamething
             for (int i = 0; i < stats.Length; i++)
             {
                 Panel row = new Panel();
-                row.Size = new Size(440, 55);
-                row.Location = new Point(0, i * 58 + 5);
+                row.Size = new Size(rowW, rowH);
+                row.Location = new Point(0, i * (int)(58 * s) + (int)(5 * s));
                 row.BackColor = i % 2 == 0 ? Color.FromArgb(45, 45, 55) : Color.FromArgb(38, 38, 48);
 
                 Label iconLbl = new Label();
                 iconLbl.Text = stats[i].Icon;
-                iconLbl.Font = new Font("Segoe UI Emoji", 18);
+                iconLbl.Font = new Font("Segoe UI Emoji", (int)(18 * s));
                 iconLbl.ForeColor = Color.White;
-                iconLbl.Size = new Size(50, 55);
-                iconLbl.Location = new Point(15, 0);
+                iconLbl.Size = new Size((int)(50 * s), rowH);
+                iconLbl.Location = new Point((int)(15 * s), 0);
                 iconLbl.TextAlign = ContentAlignment.MiddleCenter;
                 row.Controls.Add(iconLbl);
 
                 Label nameLbl = new Label();
                 nameLbl.Text = stats[i].Label;
-                nameLbl.Font = new Font("Arial", 11);
+                nameLbl.Font = new Font("Arial", (int)(11 * s));
                 nameLbl.ForeColor = Color.FromArgb(180, 180, 180);
-                nameLbl.Size = new Size(200, 55);
-                nameLbl.Location = new Point(70, 0);
+                nameLbl.Size = new Size((int)(200 * s), rowH);
+                nameLbl.Location = new Point((int)(70 * s), 0);
                 nameLbl.TextAlign = ContentAlignment.MiddleLeft;
                 row.Controls.Add(nameLbl);
 
                 Label valueLbl = new Label();
                 valueLbl.Text = stats[i].Value;
-                valueLbl.Font = new Font("Arial", 14, FontStyle.Bold);
+                valueLbl.Font = new Font("Arial", (int)(14 * s), FontStyle.Bold);
                 valueLbl.ForeColor = Color.Gold;
-                valueLbl.Size = new Size(150, 55);
-                valueLbl.Location = new Point(270, 0);
+                valueLbl.Size = new Size((int)(150 * s), rowH);
+                valueLbl.Location = new Point((int)(270 * s), 0);
                 valueLbl.TextAlign = ContentAlignment.MiddleRight;
                 row.Controls.Add(valueLbl);
 
@@ -3807,33 +4026,35 @@ namespace gamething
             }
 
             Panel divider2 = new Panel();
-            divider2.Size = new Size(440, 2);
-            divider2.Location = new Point(30, 275);
+            divider2.Size = new Size((int)(440 * s), 2);
+            divider2.Location = new Point((int)(30 * s), (int)(275 * s));
             divider2.BackColor = Color.FromArgb(80, 80, 80);
             deathForm.Controls.Add(divider2);
 
+            int btnW = (int)(180 * s);
+            int btnH = (int)(45 * s);
             Button retryBtn = new Button();
-            retryBtn.Text = "▶  Retry";
-            retryBtn.Size = new Size(180, 45);
-            retryBtn.Location = new Point(60, 295);
+            retryBtn.Text = "Retry";
+            retryBtn.Size = new Size(btnW, btnH);
+            retryBtn.Location = new Point((int)(60 * s), (int)(295 * s));
             retryBtn.BackColor = Color.FromArgb(40, 100, 40);
             retryBtn.ForeColor = Color.White;
             retryBtn.FlatStyle = FlatStyle.Flat;
             retryBtn.FlatAppearance.BorderColor = Color.FromArgb(60, 140, 60);
-            retryBtn.Font = new Font("Arial", 12, FontStyle.Bold);
-            retryBtn.Click += (s, e) => { retry = true; deathForm.Close(); };
+            retryBtn.Font = new Font("Arial", (int)(12 * s), FontStyle.Bold);
+            retryBtn.Click += (s2, e) => { retry = true; closed = true; };
             deathForm.Controls.Add(retryBtn);
 
             Button quitBtn = new Button();
-            quitBtn.Text = "✕  Quit";
-            quitBtn.Size = new Size(180, 45);
-            quitBtn.Location = new Point(260, 295);
+            quitBtn.Text = "Quit";
+            quitBtn.Size = new Size(btnW, btnH);
+            quitBtn.Location = new Point((int)(260 * s), (int)(295 * s));
             quitBtn.BackColor = Color.FromArgb(100, 40, 40);
             quitBtn.ForeColor = Color.White;
             quitBtn.FlatStyle = FlatStyle.Flat;
             quitBtn.FlatAppearance.BorderColor = Color.FromArgb(140, 60, 60);
-            quitBtn.Font = new Font("Arial", 12, FontStyle.Bold);
-            quitBtn.Click += (s, e) => { retry = false; deathForm.Close(); };
+            quitBtn.Font = new Font("Arial", (int)(12 * s), FontStyle.Bold);
+            quitBtn.Click += (s2, e) => { retry = false; closed = true; };
             deathForm.Controls.Add(quitBtn);
 
             retryBtn.MouseEnter += (s, e) => retryBtn.BackColor = Color.FromArgb(50, 130, 50);
@@ -3841,7 +4062,14 @@ namespace gamething
             quitBtn.MouseEnter += (s, e) => quitBtn.BackColor = Color.FromArgb(130, 50, 50);
             quitBtn.MouseLeave += (s, e) => quitBtn.BackColor = Color.FromArgb(100, 40, 40);
 
-            deathForm.ShowDialog();
+            this.Controls.Add(deathForm);
+            deathForm.BringToFront();
+            while (!closed) Application.DoEvents();
+            this.Controls.Remove(deathForm);
+            deathForm.Dispose();
+            showDimOverlay = false;
+            this.Invalidate();
+            this.Focus();
             return retry;
         }
 
@@ -3933,6 +4161,14 @@ namespace gamething
                         float dist = (float)Math.Sqrt(dx * dx + dy * dy);
                         if (dist < 100f) DamageEnemy(j, 1f, false);
                     }
+                    if (bossAlive)
+                    {
+                        float bcx = bossX + bossSize * scale / 2;
+                        float bcy = bossY + bossSize * scale / 2;
+                        float bdx = bcx - (enemies[i].x + boxSize / 2);
+                        float bdy = bcy - (enemies[i].y + boxSize / 2);
+                        if (Math.Sqrt(bdx * bdx + bdy * bdy) < 100f) DamageBoss(1f);
+                    }
                 }
                 enemyAlive[i] = false;
                 int flashSize = enemyIsTank.Count > i && enemyIsTank[i] ? boxSize + 20 :
@@ -3953,6 +4189,20 @@ namespace gamething
                     }
                 }
             }
+        }
+
+        private void DamageBoss(float dmg)
+        {
+            if (!bossAlive) return;
+            bossHealth -= dmg;
+            if (bossHealth <= 0) HandleBossDefeated();
+        }
+
+        private bool BossOverlaps(float x, float y, float w, float h)
+        {
+            if (!bossAlive) return false;
+            float bs = bossSize * scale;
+            return x < bossX + bs && x + w > bossX && y < bossY + bs && y + h > bossY;
         }
 
         private void HandleBossDefeated()
@@ -4002,9 +4252,13 @@ namespace gamething
             bossShootTimer = 0f;
             if (!sandboxMode)
             {
-                if (difficulty == 0) { difficultyUnlocked_Normal = true; pendingUnlockAnimation = 1; }
-                else if (difficulty == 1) { difficultyUnlocked_Hard = true; pendingUnlockAnimation = 2; }
-                else if (difficulty == 2) { difficultyUnlocked_Nightmare = true; pendingUnlockAnimation = 3; }
+                // Only fire the unlock animation the FIRST time the next tier is reached.
+                if (difficulty == 0 && !difficultyUnlocked_Normal)
+                { difficultyUnlocked_Normal = true; pendingUnlockAnimation = 1; }
+                else if (difficulty == 1 && !difficultyUnlocked_Hard)
+                { difficultyUnlocked_Hard = true; pendingUnlockAnimation = 2; }
+                else if (difficulty == 2 && !difficultyUnlocked_Nightmare)
+                { difficultyUnlocked_Nightmare = true; pendingUnlockAnimation = 3; }
             }
             SaveDifficultyUnlocks();
             if (difficulty > highestUnlockedDifficulty)
@@ -4042,7 +4296,7 @@ namespace gamething
             isPaused = true;
             ResetEnemies();
             enemySpawnTimer = 0f;
-            runHistory.Insert(0, (totalScore, totalKills, timeAlive, difficulty, sandboxMode));
+            runHistory.Insert(0, (totalScore, totalKills, timeAlive, difficulty, sandboxMode, false));
             if (runHistory.Count > maxRunHistory) runHistory.RemoveAt(runHistory.Count - 1);
             SaveRunHistory();
             bool retry = ShowDeathScreen();
@@ -4064,36 +4318,207 @@ namespace gamething
             }
         }
 
+        private bool handlingMpGameOver = false;
         private void HandleMultiplayerGameOver()
         {
+            if (handlingMpGameOver) return;
+            handlingMpGameOver = true;
+            // Close upgrade menu if open
+            if (activeUpgradePanel != null)
+            {
+                this.Controls.Remove(activeUpgradePanel);
+                activeUpgradePanel.Dispose();
+                activeUpgradePanel = null;
+            }
             parasites.Clear();
             health = 0;
             isPaused = true;
             ResetEnemies();
             enemySpawnTimer = 0f;
-            runHistory.Insert(0, (totalScore, totalKills, timeAlive, difficulty, sandboxMode));
+            runHistory.Insert(0, (totalScore, totalKills, timeAlive, difficulty, sandboxMode, true));
             if (runHistory.Count > maxRunHistory) runHistory.RemoveAt(runHistory.Count - 1);
             SaveRunHistory();
             bool retry = ShowDeathScreen();
             lastTick = DateTime.Now;
             int savedUnlock = pendingUnlockAnimation;
-            isMultiplayer = false;
             hostDead = false;
             p2Dead = false;
-            if (netManager != null) { netManager.Disconnect(); netManager = null; }
-            if (embeddedRelay != null) { embeddedRelay.Stop(); embeddedRelay = null; }
-            if (retry)
+
+            if (retry && netManager != null)
             {
-                isPaused = false;
+                // Stay in multiplayer — show ready-up overlay
+                isPaused = true;
                 ApplyDifficulty();
                 ResetGame();
                 pendingUnlockAnimation = savedUnlock;
+                ShowMultiplayerReadyUp();
             }
             else
             {
+                // Quit to menu — disconnect
+                isMultiplayer = false;
+                handlingMpGameOver = false;
+                if (netManager != null) { netManager.Disconnect(); netManager = null; }
+                if (embeddedRelay != null) { embeddedRelay.Stop(); embeddedRelay = null; LanDiscovery.StopHost(); }
                 ResetGame();
                 ApplyDifficulty();
                 pendingUnlockAnimation = savedUnlock;
+                ShowMainMenu();
+            }
+        }
+
+        private void ShowMultiplayerReadyUp()
+        {
+            showDimOverlay = true;
+            this.Invalidate();
+
+            var readyPanel = CreatePaintedOverlay(400, 250);
+
+            float s = scale;
+            Label title = new Label();
+            title.Text = isNetHost ? "WAITING FOR PLAYER" : "WAITING FOR HOST";
+            title.Font = new Font("Arial", Math.Max(1, (int)(16 * s)), FontStyle.Bold);
+            title.ForeColor = Color.FromArgb(120, 160, 255);
+            title.TextAlign = ContentAlignment.MiddleCenter;
+            title.Size = new Size(readyPanel.Width - (int)(40 * s), (int)(35 * s));
+            title.Location = new Point((int)(20 * s), (int)(20 * s));
+            title.BackColor = Color.Transparent;
+            readyPanel.Controls.Add(title);
+
+            Label statusLbl = new Label();
+            statusLbl.Text = "Press Ready when you want to go again";
+            statusLbl.Font = new Font("Arial", Math.Max(1, (int)(10 * s)));
+            statusLbl.ForeColor = Color.Gray;
+            statusLbl.TextAlign = ContentAlignment.MiddleCenter;
+            statusLbl.Size = new Size(readyPanel.Width - (int)(40 * s), (int)(25 * s));
+            statusLbl.Location = new Point((int)(20 * s), (int)(60 * s));
+            statusLbl.BackColor = Color.Transparent;
+            readyPanel.Controls.Add(statusLbl);
+
+            Button readyBtn = new Button();
+            readyBtn.Text = "Ready";
+            readyBtn.Size = new Size((int)(200 * s), (int)(44 * s));
+            readyBtn.Location = new Point((readyPanel.Width - (int)(200 * s)) / 2, (int)(100 * s));
+            readyBtn.BackColor = Color.FromArgb(40, 120, 40);
+            readyBtn.ForeColor = Color.White;
+            readyBtn.FlatStyle = FlatStyle.Flat;
+            readyBtn.FlatAppearance.BorderColor = Color.FromArgb(60, 160, 60);
+            readyBtn.Font = new Font("Arial", Math.Max(1, (int)(13 * s)), FontStyle.Bold);
+            readyBtn.Cursor = Cursors.Hand;
+            readyPanel.Controls.Add(readyBtn);
+
+            Button quitBtn = new Button();
+            quitBtn.Text = "Quit to Menu";
+            quitBtn.Size = new Size((int)(200 * s), (int)(34 * s));
+            quitBtn.Location = new Point((readyPanel.Width - (int)(200 * s)) / 2, (int)(155 * s));
+            quitBtn.BackColor = Color.FromArgb(80, 30, 30);
+            quitBtn.ForeColor = Color.White;
+            quitBtn.FlatStyle = FlatStyle.Flat;
+            quitBtn.Font = new Font("Arial", Math.Max(1, (int)(10 * s)));
+            quitBtn.Cursor = Cursors.Hand;
+            readyPanel.Controls.Add(quitBtn);
+
+            bool closed = false;
+            bool bothReady = false;
+            bool localReady = false;
+            bool remoteReady = false;
+
+            readyBtn.Click += (ss, ee) =>
+            {
+                if (netManager == null) return;
+                localReady = true;
+                netManager.SendReady();
+                readyBtn.Enabled = false;
+                readyBtn.Text = "✔ Ready!";
+                readyBtn.BackColor = Color.FromArgb(30, 80, 30);
+                statusLbl.Text = isNetHost
+                    ? $"Waiting for {p2Name} to ready up..."
+                    : "Waiting for host to start...";
+                statusLbl.ForeColor = Color.LimeGreen;
+                if (localReady && remoteReady && isNetHost)
+                {
+                    bothReady = true;
+                    closed = true;
+                }
+            };
+
+            Action? onReady = null;
+            Action? onLeft = null;
+            Action? onStart = null;
+
+            onReady = () =>
+            {
+                this.Invoke(() =>
+                {
+                    remoteReady = true;
+                    statusLbl.Text = isNetHost
+                        ? $"{p2Name} is ready!" + (localReady ? "" : " Press Ready!")
+                        : "Host is ready!";
+                    statusLbl.ForeColor = Color.LimeGreen;
+                    if (localReady && remoteReady && isNetHost)
+                    {
+                        bothReady = true;
+                        closed = true;
+                    }
+                });
+            };
+            onLeft = () =>
+            {
+                this.Invoke(() =>
+                {
+                    statusLbl.Text = "Player disconnected";
+                    statusLbl.ForeColor = Color.Red;
+                    readyBtn.Enabled = false;
+                });
+            };
+            onStart = () =>
+            {
+                this.Invoke(() =>
+                {
+                    bothReady = true;
+                    closed = true;
+                });
+            };
+
+            netManager!.OnPlayerReady += onReady;
+            netManager.OnPeerLeft += onLeft;
+            if (!isNetHost) netManager.OnGameStartReceived += onStart;
+
+            quitBtn.Click += (ss, ee) => closed = true;
+
+            this.Controls.Add(readyPanel);
+            readyPanel.BringToFront();
+            while (!closed) Application.DoEvents();
+            this.Controls.Remove(readyPanel);
+            readyPanel.Dispose();
+            showDimOverlay = false;
+            this.Invalidate();
+
+            // Unhook events
+            netManager!.OnPlayerReady -= onReady;
+            netManager.OnPeerLeft -= onLeft;
+            if (!isNetHost) netManager.OnGameStartReceived -= onStart;
+
+            handlingMpGameOver = false;
+            if (bothReady)
+            {
+                if (isNetHost) netManager.SendGameStart();
+                isPaused = false;
+                hostDead = false;
+                p2Dead = false;
+                ResetGame();
+                lastTick = DateTime.Now;
+                this.Focus();
+                if (isNetHost) { p2X = posX + 50; p2Y = posY; p2Health = maxHealth; p2MaxHealth = maxHealth; }
+            }
+            else
+            {
+                // Quit
+                isMultiplayer = false;
+                if (netManager != null) { netManager.Disconnect(); netManager = null; }
+                if (embeddedRelay != null) { embeddedRelay.Stop(); embeddedRelay = null; LanDiscovery.StopHost(); }
+                ResetGame();
+                ApplyDifficulty();
                 ShowMainMenu();
             }
         }
@@ -4829,7 +5254,7 @@ namespace gamething
             try
             {
                 var lines = runHistory.Select(r =>
-                    $"{r.score}|{r.kills}|{r.time}|{r.difficulty}|{r.sandbox}");
+                    $"{r.score}|{r.kills}|{r.time}|{r.difficulty}|{r.sandbox}|{r.multiplayer}");
                 File.WriteAllLines(Path.Combine(GetSaveDir(), "history.dat"),
                     lines);
             }
@@ -4848,7 +5273,10 @@ namespace gamething
                     var parts = line.Split('|');
                     if (parts.Length == 5)
                         runHistory.Add((float.Parse(parts[0]), int.Parse(parts[1]),
-                            float.Parse(parts[2]), int.Parse(parts[3]), bool.Parse(parts[4])));
+                            float.Parse(parts[2]), int.Parse(parts[3]), bool.Parse(parts[4]), false));
+                    else if (parts.Length == 6)
+                        runHistory.Add((float.Parse(parts[0]), int.Parse(parts[1]),
+                            float.Parse(parts[2]), int.Parse(parts[3]), bool.Parse(parts[4]), bool.Parse(parts[5])));
                 }
             }
             catch { }
@@ -4908,23 +5336,58 @@ namespace gamething
             catch { }
         }
 
+        private Panel CreatePaintedOverlay(int baseW, int baseH)
+        {
+            int w = Math.Min(ClientSize.Width - 20, (int)(baseW * scale));
+            int h = Math.Min(ClientSize.Height - 20, (int)(baseH * scale));
+            var panel = new Panel { Size = new Size(w, h), Location = new Point((ClientSize.Width - w) / 2, (ClientSize.Height - h) / 2), BackColor = Color.Transparent };
+            typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(panel, true);
+            panel.Paint += (s, pe) =>
+            {
+                var g = pe.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                int r = (int)(14 * scale);
+                var rect = new Rectangle(0, 0, panel.Width - 1, panel.Height - 1);
+                using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                path.AddArc(rect.X, rect.Y, r, r, 180, 90); path.AddArc(rect.Right - r, rect.Y, r, r, 270, 90);
+                path.AddArc(rect.Right - r, rect.Bottom - r, r, r, 0, 90); path.AddArc(rect.X, rect.Bottom - r, r, r, 90, 90);
+                path.CloseFigure();
+                g.FillPath(new SolidBrush(Color.FromArgb(240, 20, 20, 30)), path);
+                g.DrawPath(new Pen(Color.FromArgb(100, 60, 60, 100), 2 * scale), path);
+            };
+            return panel;
+        }
+
+        private void ShowOverlayBlocking(Panel overlay)
+        {
+            bool closed = false;
+            showDimOverlay = true;
+            this.Invalidate();
+
+            overlay.Tag = (Action)(() => closed = true);
+            this.Controls.Add(overlay);
+            overlay.BringToFront();
+            while (!closed) Application.DoEvents();
+            this.Controls.Remove(overlay);
+            overlay.Dispose();
+            showDimOverlay = false;
+            this.Invalidate();
+            this.Focus();
+        }
+
         private void ShowRunHistory()
         {
-            Form histForm = new Form();
-            histForm.Text = "Run History";
-            histForm.Size = new Size(700, 500);
-            histForm.StartPosition = FormStartPosition.CenterScreen;
+            var histForm = CreatePaintedOverlay(700, 500);
             histForm.BackColor = Color.FromArgb(20, 20, 30);
-            histForm.FormBorderStyle = FormBorderStyle.FixedDialog;
-            histForm.MaximizeBox = false;
+            float s = scale;
 
             Label title = new Label();
             title.Text = "📜 RUN HISTORY";
-            title.Font = new Font("Arial", 20, FontStyle.Bold);
+            title.Font = new Font("Arial", Math.Max(1, (int)(20 * s)), FontStyle.Bold);
             title.ForeColor = Color.White;
             title.TextAlign = ContentAlignment.MiddleCenter;
-            title.Size = new Size(660, 40);
-            title.Location = new Point(20, 15);
+            title.Size = new Size(histForm.Width - (int)(40 * s), (int)(40 * s));
+            title.Location = new Point((int)(20 * s), (int)(15 * s));
             histForm.Controls.Add(title);
 
             string[] diffNames = { "Tutorial", "Normal", "Hard", "Nightmare" };
@@ -4934,15 +5397,17 @@ namespace gamething
             {
                 Label noRuns = new Label();
                 noRuns.Text = "No runs yet. Play a game first!";
-                noRuns.Font = new Font("Arial", 14);
+                noRuns.Font = new Font("Arial", Math.Max(1, (int)(14 * s)));
                 noRuns.ForeColor = Color.Gray;
                 noRuns.TextAlign = ContentAlignment.MiddleCenter;
-                noRuns.Size = new Size(660, 40);
-                noRuns.Location = new Point(20, 200);
+                noRuns.Size = new Size(histForm.Width - (int)(40 * s), (int)(40 * s));
+                noRuns.Location = new Point((int)(20 * s), (int)(200 * s));
                 histForm.Controls.Add(noRuns);
             }
             else
             {
+                int rowH = (int)(65 * s);
+                int rowGap = (int)(75 * s);
                 for (int i = 0; i < runHistory.Count; i++)
                 {
                     var run = runHistory[i];
@@ -4951,53 +5416,53 @@ namespace gamething
                     int diff = Math.Max(0, Math.Min(3, run.difficulty));
 
                     Panel row = new Panel();
-                    row.Size = new Size(650, 65);
-                    row.Location = new Point(25, 65 + i * 75);
+                    row.Size = new Size((int)(650 * s), rowH);
+                    row.Location = new Point((int)(25 * s), (int)(65 * s) + i * rowGap);
                     row.BackColor = i % 2 == 0 ? Color.FromArgb(30, 30, 45) : Color.FromArgb(25, 25, 38);
                     histForm.Controls.Add(row);
 
                     Label runNum = new Label();
                     runNum.Text = $"#{i + 1}";
-                    runNum.Font = new Font("Arial", 14, FontStyle.Bold);
+                    runNum.Font = new Font("Arial", Math.Max(1, (int)(14 * s)), FontStyle.Bold);
                     runNum.ForeColor = Color.Gold;
-                    runNum.Size = new Size(40, 65);
-                    runNum.Location = new Point(10, 0);
+                    runNum.Size = new Size((int)(40 * s), rowH);
+                    runNum.Location = new Point((int)(10 * s), 0);
                     runNum.TextAlign = ContentAlignment.MiddleCenter;
                     row.Controls.Add(runNum);
 
                     Label diffLabel = new Label();
-                    diffLabel.Text = (run.sandbox ? "🧪 " : "") + diffNames[diff];
-                    diffLabel.Font = new Font("Arial", 12, FontStyle.Bold);
+                    diffLabel.Text = (run.sandbox ? "🧪 " : "") + (run.multiplayer ? "👥 " : "") + diffNames[diff];
+                    diffLabel.Font = new Font("Arial", Math.Max(1, (int)(12 * s)), FontStyle.Bold);
                     diffLabel.ForeColor = run.sandbox ? Color.MediumPurple : diffColors[diff];
-                    diffLabel.Size = new Size(120, 65);
-                    diffLabel.Location = new Point(55, 0);
+                    diffLabel.Size = new Size((int)(120 * s), rowH);
+                    diffLabel.Location = new Point((int)(55 * s), 0);
                     diffLabel.TextAlign = ContentAlignment.MiddleLeft;
                     row.Controls.Add(diffLabel);
 
                     Label scoreLabel = new Label();
                     scoreLabel.Text = $"💲 {run.score:F0}";
-                    scoreLabel.Font = new Font("Arial", 11);
+                    scoreLabel.Font = new Font("Arial", Math.Max(1, (int)(11 * s)));
                     scoreLabel.ForeColor = Color.White;
-                    scoreLabel.Size = new Size(150, 65);
-                    scoreLabel.Location = new Point(180, 0);
+                    scoreLabel.Size = new Size((int)(150 * s), rowH);
+                    scoreLabel.Location = new Point((int)(180 * s), 0);
                     scoreLabel.TextAlign = ContentAlignment.MiddleLeft;
                     row.Controls.Add(scoreLabel);
 
                     Label killsLabel = new Label();
                     killsLabel.Text = $"💀 {run.kills} kills";
-                    killsLabel.Font = new Font("Arial", 11);
+                    killsLabel.Font = new Font("Arial", Math.Max(1, (int)(11 * s)));
                     killsLabel.ForeColor = Color.White;
-                    killsLabel.Size = new Size(130, 65);
-                    killsLabel.Location = new Point(340, 0);
+                    killsLabel.Size = new Size((int)(130 * s), rowH);
+                    killsLabel.Location = new Point((int)(340 * s), 0);
                     killsLabel.TextAlign = ContentAlignment.MiddleLeft;
                     row.Controls.Add(killsLabel);
 
                     Label timeLabel = new Label();
                     timeLabel.Text = $"⏱ {minutes:00}:{seconds:00}";
-                    timeLabel.Font = new Font("Arial", 11);
+                    timeLabel.Font = new Font("Arial", Math.Max(1, (int)(11 * s)));
                     timeLabel.ForeColor = Color.White;
-                    timeLabel.Size = new Size(120, 65);
-                    timeLabel.Location = new Point(480, 0);
+                    timeLabel.Size = new Size((int)(120 * s), rowH);
+                    timeLabel.Location = new Point((int)(480 * s), 0);
                     timeLabel.TextAlign = ContentAlignment.MiddleLeft;
                     row.Controls.Add(timeLabel);
                 }
@@ -5005,33 +5470,30 @@ namespace gamething
 
             Button closeBtn = new Button();
             closeBtn.Text = "Close";
-            closeBtn.Size = new Size(120, 35);
-            closeBtn.Location = new Point(290, 430);
+            closeBtn.Font = new Font("Arial", Math.Max(1, (int)(10 * s)), FontStyle.Bold);
+            closeBtn.Size = new Size((int)(120 * s), (int)(35 * s));
+            closeBtn.Location = new Point((histForm.Width - (int)(120 * s)) / 2, histForm.Height - (int)(70 * s));
             closeBtn.BackColor = Color.FromArgb(80, 30, 30);
             closeBtn.ForeColor = Color.White;
             closeBtn.FlatStyle = FlatStyle.Flat;
-            closeBtn.Click += (s, e) => histForm.Close();
+            closeBtn.Click += (ss, ee) => ((Action)histForm.Tag!)();
             histForm.Controls.Add(closeBtn);
 
-            histForm.ShowDialog();
+            ShowOverlayBlocking(histForm);
         }
         private void ShowBestiary()
         {
-            Form bestForm = new Form();
-            bestForm.Text = "Bestiary";
-            bestForm.Size = new Size(800, 600);
-            bestForm.StartPosition = FormStartPosition.CenterScreen;
+            var bestForm = CreatePaintedOverlay(800, 600);
             bestForm.BackColor = Color.FromArgb(20, 20, 30);
-            bestForm.FormBorderStyle = FormBorderStyle.FixedDialog;
-            bestForm.MaximizeBox = false;
+            float s = scale;
 
             Label title = new Label();
             title.Text = "📖 BESTIARY";
-            title.Font = new Font("Arial", 20, FontStyle.Bold);
+            title.Font = new Font("Arial", Math.Max(1, (int)(20 * s)), FontStyle.Bold);
             title.ForeColor = Color.White;
             title.TextAlign = ContentAlignment.MiddleCenter;
-            title.Size = new Size(760, 40);
-            title.Location = new Point(20, 15);
+            title.Size = new Size(bestForm.Width - (int)(40 * s), (int)(40 * s));
+            title.Location = new Point((int)(20 * s), (int)(15 * s));
             bestForm.Controls.Add(title);
 
             var entries = new[]
@@ -5055,14 +5517,17 @@ namespace gamething
             string[] diffNames = { "Tutorial", "Normal", "Hard", "Nightmare" };
             Color[] diffColors = { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
 
+            int rowH = (int)(60 * s);
+            int rowW = (int)(730 * s);
+
             Panel scrollPanel = new Panel();
-            scrollPanel.Size = new Size(750, 480);
-            scrollPanel.Location = new Point(25, 60);
+            scrollPanel.Size = new Size(bestForm.Width - (int)(50 * s), bestForm.Height - (int)(120 * s));
+            scrollPanel.Location = new Point((int)(25 * s), (int)(60 * s));
             scrollPanel.AutoScroll = true;
             scrollPanel.BackColor = Color.FromArgb(20, 20, 30);
             bestForm.Controls.Add(scrollPanel);
 
-            int yPos = 5;
+            int yPos = (int)(5 * s);
             for (int i = 0; i < entries.Length; i++)
             {
                 var entry = entries[i];
@@ -5071,108 +5536,105 @@ namespace gamething
                 bool available = difficulty >= entry.MinDiff || kills > 0;
 
                 Panel row = new Panel();
-                row.Size = new Size(730, 60);
-                row.Location = new Point(5, yPos);
+                row.Size = new Size(rowW, rowH);
+                row.Location = new Point((int)(5 * s), yPos);
                 row.BackColor = i % 2 == 0 ? Color.FromArgb(28, 28, 42) : Color.FromArgb(22, 22, 35);
                 scrollPanel.Controls.Add(row);
 
                 // Icon/color indicator
                 Panel colorDot = new Panel();
-                colorDot.Size = new Size(20, 20);
-                colorDot.Location = new Point(10, 20);
+                colorDot.Size = new Size((int)(20 * s), (int)(20 * s));
+                colorDot.Location = new Point((int)(10 * s), (int)(20 * s));
                 colorDot.BackColor = discovered ? entry.Color : Color.FromArgb(50, 50, 50);
                 row.Controls.Add(colorDot);
 
                 // Name
                 Label nameLabel = new Label();
                 nameLabel.Text = discovered ? entry.Name : "???";
-                nameLabel.Font = new Font("Arial", 13, FontStyle.Bold);
+                nameLabel.Font = new Font("Arial", Math.Max(1, (int)(13 * s)), FontStyle.Bold);
                 nameLabel.ForeColor = discovered ? entry.Color : Color.FromArgb(60, 60, 60);
-                nameLabel.Size = new Size(130, 60);
-                nameLabel.Location = new Point(35, 0);
+                nameLabel.Size = new Size((int)(130 * s), rowH);
+                nameLabel.Location = new Point((int)(35 * s), 0);
                 nameLabel.TextAlign = ContentAlignment.MiddleLeft;
                 row.Controls.Add(nameLabel);
 
                 // Description
                 Label descLabel = new Label();
                 descLabel.Text = discovered ? entry.Desc : "Kill this enemy to unlock its entry.";
-                descLabel.Font = new Font("Arial", 9);
+                descLabel.Font = new Font("Arial", Math.Max(1, (int)(9 * s)));
                 descLabel.ForeColor = discovered ? Color.LightGray : Color.FromArgb(60, 60, 60);
-                descLabel.Size = new Size(330, 60);
-                descLabel.Location = new Point(170, 0);
+                descLabel.Size = new Size((int)(330 * s), rowH);
+                descLabel.Location = new Point((int)(170 * s), 0);
                 descLabel.TextAlign = ContentAlignment.MiddleLeft;
                 row.Controls.Add(descLabel);
 
                 // Effect
                 Label effectLabel = new Label();
                 effectLabel.Text = discovered && entry.Effect != "" ? "⚡ " + entry.Effect : "";
-                effectLabel.Font = new Font("Arial", 9, FontStyle.Italic);
+                effectLabel.Font = new Font("Arial", Math.Max(1, (int)(9 * s)), FontStyle.Italic);
                 effectLabel.ForeColor = Color.Gold;
-                effectLabel.Size = new Size(150, 60);
-                effectLabel.Location = new Point(505, 0);
+                effectLabel.Size = new Size((int)(150 * s), rowH);
+                effectLabel.Location = new Point((int)(505 * s), 0);
                 effectLabel.TextAlign = ContentAlignment.MiddleLeft;
                 row.Controls.Add(effectLabel);
 
                 // Kill count
                 Label killLabel = new Label();
                 killLabel.Text = discovered ? $"💀 {kills}" : "";
-                killLabel.Font = new Font("Arial", 11, FontStyle.Bold);
+                killLabel.Font = new Font("Arial", Math.Max(1, (int)(11 * s)), FontStyle.Bold);
                 killLabel.ForeColor = Color.Gold;
-                killLabel.Size = new Size(80, 60);
-                killLabel.Location = new Point(640, 0);
+                killLabel.Size = new Size((int)(80 * s), rowH);
+                killLabel.Location = new Point((int)(640 * s), 0);
                 killLabel.TextAlign = ContentAlignment.MiddleRight;
                 row.Controls.Add(killLabel);
 
                 // Min difficulty badge
                 Label diffBadge = new Label();
                 diffBadge.Text = diffNames[entry.MinDiff];
-                diffBadge.Font = new Font("Arial", 8);
+                diffBadge.Font = new Font("Arial", Math.Max(1, (int)(8 * s)));
                 diffBadge.ForeColor = diffColors[entry.MinDiff];
-                diffBadge.Size = new Size(60, 15);
-                diffBadge.Location = new Point(35, 45);
+                diffBadge.Size = new Size((int)(60 * s), (int)(15 * s));
+                diffBadge.Location = new Point((int)(35 * s), (int)(45 * s));
                 diffBadge.TextAlign = ContentAlignment.MiddleLeft;
                 row.Controls.Add(diffBadge);
 
-                yPos += 65;
+                yPos += (int)(65 * s);
             }
 
-            scrollPanel.AutoScrollMinSize = new Size(730, yPos);
+            scrollPanel.AutoScrollMinSize = new Size(rowW, yPos);
 
             Button closeBtn = new Button();
             closeBtn.Text = "Close";
-            closeBtn.Size = new Size(120, 35);
-            closeBtn.Location = new Point(340, 548);
+            closeBtn.Font = new Font("Arial", Math.Max(1, (int)(10 * s)), FontStyle.Bold);
+            closeBtn.Size = new Size((int)(120 * s), (int)(35 * s));
+            closeBtn.Location = new Point((bestForm.Width - (int)(120 * s)) / 2, bestForm.Height - (int)(52 * s));
             closeBtn.BackColor = Color.FromArgb(80, 30, 30);
             closeBtn.ForeColor = Color.White;
             closeBtn.FlatStyle = FlatStyle.Flat;
-            closeBtn.Click += (s, e2) => bestForm.Close();
+            closeBtn.Click += (ss, e2) => ((Action)bestForm.Tag!)();
             bestForm.Controls.Add(closeBtn);
 
-            bestForm.ShowDialog();
+            ShowOverlayBlocking(bestForm);
         }
 
         private void ShowAchievements()
         {
-            Form achForm = new Form();
-            achForm.Text = "Achievements";
-            achForm.Size = new Size(750, 600);
-            achForm.StartPosition = FormStartPosition.CenterScreen;
+            var achForm = CreatePaintedOverlay(750, 600);
             achForm.BackColor = Color.FromArgb(20, 20, 30);
-            achForm.FormBorderStyle = FormBorderStyle.FixedDialog;
-            achForm.MaximizeBox = false;
+            float s = scale;
 
             Label title = new Label();
             title.Text = $"🏆 ACHIEVEMENTS ({unlockedAchievements.Count}/{achievements.Length})";
-            title.Font = new Font("Arial", 16, FontStyle.Bold);
+            title.Font = new Font("Arial", Math.Max(1, (int)(16 * s)), FontStyle.Bold);
             title.ForeColor = Color.Gold;
             title.TextAlign = ContentAlignment.MiddleCenter;
-            title.Size = new Size(710, 40);
-            title.Location = new Point(20, 10);
+            title.Size = new Size(achForm.Width - (int)(40 * s), (int)(40 * s));
+            title.Location = new Point((int)(20 * s), (int)(10 * s));
             achForm.Controls.Add(title);
 
             Panel scrollPanel = new Panel();
-            scrollPanel.Location = new Point(10, 55);
-            scrollPanel.Size = new Size(715, 490);
+            scrollPanel.Location = new Point((int)(10 * s), (int)(55 * s));
+            scrollPanel.Size = new Size(achForm.Width - (int)(20 * s), achForm.Height - (int)(110 * s));
             scrollPanel.AutoScroll = true;
             scrollPanel.BackColor = Color.FromArgb(20, 20, 30);
             achForm.Controls.Add(scrollPanel);
@@ -5189,7 +5651,9 @@ namespace gamething
                 Color.FromArgb(100, 100, 120)
             };
 
-            int yPos = 5;
+            int achRowW = (int)(680 * s);
+            int achRowH = (int)(45 * s);
+            int yPos = (int)(5 * s);
             for (int c = 0; c < categories.Length; c++)
             {
                 string cat = categories[c];
@@ -5200,14 +5664,14 @@ namespace gamething
 
                 Label catLabel = new Label();
                 catLabel.Text = $"  {cat.ToUpper()} ({catUnlocked}/{catAchs.Length})";
-                catLabel.Font = new Font("Arial", 12, FontStyle.Bold);
+                catLabel.Font = new Font("Arial", Math.Max(1, (int)(12 * s)), FontStyle.Bold);
                 catLabel.ForeColor = catColors[c];
                 catLabel.BackColor = Color.FromArgb(30, 30, 45);
-                catLabel.Size = new Size(680, 30);
-                catLabel.Location = new Point(5, yPos);
+                catLabel.Size = new Size(achRowW, (int)(30 * s));
+                catLabel.Location = new Point((int)(5 * s), yPos);
                 catLabel.TextAlign = ContentAlignment.MiddleLeft;
                 scrollPanel.Controls.Add(catLabel);
-                yPos += 35;
+                yPos += (int)(35 * s);
 
                 for (int i = 0; i < catAchs.Length; i++)
                 {
@@ -5215,63 +5679,63 @@ namespace gamething
                     bool unlocked = unlockedAchievements.Contains(ach.id);
 
                     Panel row = new Panel();
-                    row.Size = new Size(680, 45);
-                    row.Location = new Point(5, yPos);
+                    row.Size = new Size(achRowW, achRowH);
+                    row.Location = new Point((int)(5 * s), yPos);
                     row.BackColor = unlocked ? Color.FromArgb(35, 45, 35) : Color.FromArgb(25, 25, 30);
                     scrollPanel.Controls.Add(row);
 
                     Label iconLabel = new Label();
                     iconLabel.Text = unlocked ? ach.icon : "🔒";
-                    iconLabel.Font = new Font("Segoe UI Emoji", 16);
-                    iconLabel.Size = new Size(40, 45);
-                    iconLabel.Location = new Point(5, 0);
+                    iconLabel.Font = new Font("Segoe UI Emoji", Math.Max(1, (int)(16 * s)));
+                    iconLabel.Size = new Size((int)(40 * s), achRowH);
+                    iconLabel.Location = new Point((int)(5 * s), 0);
                     iconLabel.TextAlign = ContentAlignment.MiddleCenter;
                     row.Controls.Add(iconLabel);
 
                     Label nameLabel = new Label();
                     nameLabel.Text = unlocked ? ach.name : "???";
-                    nameLabel.Font = new Font("Arial", 12, FontStyle.Bold);
+                    nameLabel.Font = new Font("Arial", Math.Max(1, (int)(12 * s)), FontStyle.Bold);
                     nameLabel.ForeColor = unlocked ? Color.White : Color.FromArgb(80, 80, 80);
-                    nameLabel.Size = new Size(200, 45);
-                    nameLabel.Location = new Point(50, 0);
+                    nameLabel.Size = new Size((int)(200 * s), achRowH);
+                    nameLabel.Location = new Point((int)(50 * s), 0);
                     nameLabel.TextAlign = ContentAlignment.MiddleLeft;
                     row.Controls.Add(nameLabel);
 
                     Label descLabel = new Label();
                     descLabel.Text = ach.description;
-                    descLabel.Font = new Font("Arial", 10);
+                    descLabel.Font = new Font("Arial", Math.Max(1, (int)(10 * s)));
                     descLabel.ForeColor = unlocked ? Color.FromArgb(180, 200, 180) : Color.FromArgb(60, 60, 60);
-                    descLabel.Size = new Size(380, 45);
-                    descLabel.Location = new Point(255, 0);
+                    descLabel.Size = new Size((int)(380 * s), achRowH);
+                    descLabel.Location = new Point((int)(255 * s), 0);
                     descLabel.TextAlign = ContentAlignment.MiddleLeft;
                     row.Controls.Add(descLabel);
 
                     Label statusLabel = new Label();
                     statusLabel.Text = unlocked ? "✔" : "✗";
-                    statusLabel.Font = new Font("Arial", 14, FontStyle.Bold);
+                    statusLabel.Font = new Font("Arial", Math.Max(1, (int)(14 * s)), FontStyle.Bold);
                     statusLabel.ForeColor = unlocked ? Color.LimeGreen : Color.FromArgb(60, 30, 30);
-                    statusLabel.Size = new Size(35, 45);
-                    statusLabel.Location = new Point(640, 0);
+                    statusLabel.Size = new Size((int)(35 * s), achRowH);
+                    statusLabel.Location = new Point((int)(640 * s), 0);
                     statusLabel.TextAlign = ContentAlignment.MiddleCenter;
                     row.Controls.Add(statusLabel);
 
-                    yPos += 50;
+                    yPos += (int)(50 * s);
                 }
-                yPos += 10;
+                yPos += (int)(10 * s);
             }
 
             Button closeBtn = new Button();
             closeBtn.Text = "Close";
-            closeBtn.Size = new Size(120, 35);
-            closeBtn.Location = new Point(315, 550);
+            closeBtn.Size = new Size((int)(120 * s), (int)(35 * s));
+            closeBtn.Location = new Point((achForm.Width - (int)(120 * s)) / 2, achForm.Height - (int)(50 * s));
             closeBtn.BackColor = Color.FromArgb(80, 30, 30);
             closeBtn.ForeColor = Color.White;
             closeBtn.FlatStyle = FlatStyle.Flat;
-            closeBtn.Font = new Font("Arial", 11, FontStyle.Bold);
-            closeBtn.Click += (s, e2) => achForm.Close();
+            closeBtn.Font = new Font("Arial", Math.Max(1, (int)(11 * s)), FontStyle.Bold);
+            closeBtn.Click += (ss, e2) => ((Action)achForm.Tag!)();
             achForm.Controls.Add(closeBtn);
 
-            achForm.ShowDialog();
+            ShowOverlayBlocking(achForm);
         }
 
         // --- Multiplayer sync helpers ---
@@ -5291,6 +5755,7 @@ namespace gamething
                 ClientX = p2X / nw, ClientY = p2Y / nh,
                 ClientHealth = p2Health, ClientMaxHealth = p2MaxHealth,
                 ClientDashing = p2Dashing,
+                ClientDashCooldown = p2DashCooldown,
 
                 TimeAlive = timeAlive,
                 TotalKills = totalKills,
@@ -5344,12 +5809,14 @@ namespace gamething
                     pkt.WallAngle = Array.Empty<float>();
                 }
 
-                int eCount = Math.Min(enemies.Count, 100);
+                int eCount = Math.Min(enemies.Count, 80);
                 pkt.EnemyCount = eCount;
                 pkt.EnemyX = new float[eCount];
                 pkt.EnemyY = new float[eCount];
                 pkt.EnemyAlive = new bool[eCount];
                 pkt.EnemyType = new int[eCount];
+                pkt.EnemyEffectFlags = new byte[eCount];
+                pkt.EnemyHealthPacked = new byte[eCount];
                 for (int i = 0; i < eCount && i < enemies.Count; i++)
                 {
                     pkt.EnemyX[i] = enemies[i].x / nw;
@@ -5357,9 +5824,20 @@ namespace gamething
                     pkt.EnemyAlive[i] = i < enemyAlive.Count && enemyAlive[i];
                     pkt.EnemyType[i] = (i < enemyIsTank.Count && enemyIsTank[i]) ? 1 :
                                        (i < enemyCanShoot.Count && enemyCanShoot[i]) ? 2 : 0;
+                    byte flags = 0;
+                    if (i < enemyIsRunner.Count && enemyIsRunner[i]) flags |= 0x01;
+                    if (i < enemyIsBerserker.Count && enemyIsBerserker[i]) flags |= 0x02;
+                    if (i < enemyIsParasitic.Count && enemyIsParasitic[i]) flags |= 0x04;
+                    if (i < enemyIsPhasing.Count && enemyIsPhasing[i]) flags |= 0x08;
+                    if (i < enemyIsVisible.Count && enemyIsVisible[i]) flags |= 0x10;
+                    pkt.EnemyEffectFlags[i] = flags;
+                    float hp = (i < enemyHealth.Count) ? enemyHealth[i] : 0f;
+                    pkt.EnemyHealthPacked[i] = (byte)Math.Min(255, Math.Max(0, hp * 16f));
                 }
 
-                int bCount = Math.Min(bullets.Count, 200);
+                // Cap bullets aggressively so the GameState packet always fits in MTU,
+                // even when super spawns hundreds of bullets per second.
+                int bCount = Math.Min(bullets.Count, 60);
                 pkt.BulletCount = bCount;
                 pkt.BulletX = new float[bCount];
                 pkt.BulletY = new float[bCount];
@@ -5369,7 +5847,7 @@ namespace gamething
                     pkt.BulletY[i] = bullets[i].y / nh;
                 }
 
-                int cCount = Math.Min(coins.Count, 50);
+                int cCount = Math.Min(coins.Count, 30);
                 pkt.CoinCount = cCount;
                 pkt.CoinX = new float[cCount];
                 pkt.CoinY = new float[cCount];
@@ -5379,7 +5857,7 @@ namespace gamething
                     pkt.CoinY[i] = coins[i].y / nh;
                 }
 
-                int ebCount = Math.Min(enemyBullets.Count, 100);
+                int ebCount = Math.Min(enemyBullets.Count, 60);
                 pkt.EnemyBulletCount = ebCount;
                 pkt.EnemyBulletX = new float[ebCount];
                 pkt.EnemyBulletY = new float[ebCount];
@@ -5415,6 +5893,7 @@ namespace gamething
                 health = state.ClientHealth;
                 maxHealth = state.ClientMaxHealth;
                 isDashing = state.ClientDashing;
+                dashCooldown = state.ClientDashCooldown;
                 hostDead = state.ClientDead; // "hostDead" on client means "my dead state"
 
                 score = state.HostScore;
@@ -5453,8 +5932,20 @@ namespace gamething
                     bossMaxHealth = state.BossMaxHealth;
                 }
 
-                // Sync enemies — pad ALL parallel lists to avoid index out of range
+                // Sync enemies — first truncate any extras (client may have spawned
+                // local ghosts before this state arrived), then pad parallel lists.
                 int ec = state.EnemyCount;
+                if (enemies.Count > ec) enemies.RemoveRange(ec, enemies.Count - ec);
+                if (enemyAlive.Count > ec) enemyAlive.RemoveRange(ec, enemyAlive.Count - ec);
+                if (enemyIsTank.Count > ec) enemyIsTank.RemoveRange(ec, enemyIsTank.Count - ec);
+                if (enemyCanShoot.Count > ec) enemyCanShoot.RemoveRange(ec, enemyCanShoot.Count - ec);
+                if (enemyIsRunner.Count > ec) enemyIsRunner.RemoveRange(ec, enemyIsRunner.Count - ec);
+                if (enemyHealth.Count > ec) enemyHealth.RemoveRange(ec, enemyHealth.Count - ec);
+                if (enemyRespawnTimers.Count > ec) enemyRespawnTimers.RemoveRange(ec, enemyRespawnTimers.Count - ec);
+                if (enemyIsParasitic.Count > ec) enemyIsParasitic.RemoveRange(ec, enemyIsParasitic.Count - ec);
+                if (enemyIsPhasing.Count > ec) enemyIsPhasing.RemoveRange(ec, enemyIsPhasing.Count - ec);
+                if (enemyIsBerserker.Count > ec) enemyIsBerserker.RemoveRange(ec, enemyIsBerserker.Count - ec);
+                if (enemyIsVisible.Count > ec) enemyIsVisible.RemoveRange(ec, enemyIsVisible.Count - ec);
                 while (enemies.Count < ec) enemies.Add((0, 0));
                 while (enemyAlive.Count < ec) enemyAlive.Add(false);
                 while (enemyIsTank.Count < ec) enemyIsTank.Add(false);
@@ -5473,7 +5964,15 @@ namespace gamething
                     enemyAlive[i] = state.EnemyAlive[i];
                     enemyIsTank[i] = state.EnemyType[i] == 1;
                     enemyCanShoot[i] = state.EnemyType[i] == 2;
-                    enemyIsVisible[i] = true;
+                    byte flags = (state.EnemyEffectFlags != null && i < state.EnemyEffectFlags.Length)
+                        ? state.EnemyEffectFlags[i] : (byte)0;
+                    enemyIsRunner[i]    = (flags & 0x01) != 0;
+                    enemyIsBerserker[i] = (flags & 0x02) != 0;
+                    enemyIsParasitic[i] = (flags & 0x04) != 0;
+                    enemyIsPhasing[i]   = (flags & 0x08) != 0;
+                    enemyIsVisible[i]   = (flags & 0x10) != 0;
+                    if (state.EnemyHealthPacked != null && i < state.EnemyHealthPacked.Length)
+                        enemyHealth[i] = state.EnemyHealthPacked[i] / 16f;
                 }
 
                 // Sync bullets
@@ -5518,6 +6017,8 @@ namespace gamething
 
             // Host simulates P2 movement
             float p2Speed = speed;
+            float p2PrevX = p2X;
+            float p2PrevY = p2Y;
             if (input.MoveX != 0 || input.MoveY != 0)
             {
                 float len = (float)Math.Sqrt(input.MoveX * input.MoveX + input.MoveY * input.MoveY);
@@ -5527,6 +6028,51 @@ namespace gamething
                     p2Y += (input.MoveY / len) * p2Speed * deltaTime * 60f;
                 }
             }
+            // Block p2 from phasing through walls
+            if (CollidesWithWall(p2X, p2Y, boxSize))
+            {
+                p2X = p2PrevX;
+                p2Y = p2PrevY;
+            }
+
+            // P2 dash — host owns the simulation. The Dashing field arrives as a
+            // one-shot trigger from the client (set on space keypress, cleared on send).
+            if (p2DashCooldown > 0) p2DashCooldown -= deltaTime;
+            if (input.Dashing && !p2Dashing && p2DashCooldown <= 0)
+            {
+                float mvLen = (float)Math.Sqrt(input.MoveX * input.MoveX + input.MoveY * input.MoveY);
+                if (mvLen > 0)
+                {
+                    p2Dashing = true;
+                    p2DashTimer = dashDuration;
+                    p2DashCooldown = dashCooldownTime;
+                    p2DashVelX = (input.MoveX / mvLen) * dashPower;
+                    p2DashVelY = (input.MoveY / mvLen) * dashPower;
+                }
+                // consume the trigger so a stale latch can't re-fire next tick
+                latestP2Input.Dashing = false;
+            }
+            if (p2Dashing)
+            {
+                p2DashTimer -= deltaTime;
+                float dashProg = p2DashTimer / dashDuration;
+                float p2DashPrevX = p2X;
+                float p2DashPrevY = p2Y;
+                p2X += p2DashVelX * dashProg * deltaTime * 60f;
+                p2Y += p2DashVelY * dashProg * deltaTime * 60f;
+                if (CollidesWithWall(p2X, p2Y, boxSize))
+                {
+                    p2X = p2DashPrevX;
+                    p2Y = p2DashPrevY;
+                }
+                if (p2DashTimer <= 0)
+                {
+                    p2Dashing = false;
+                    p2DashVelX = 0f;
+                    p2DashVelY = 0f;
+                }
+            }
+
             p2X = Math.Max(0, Math.Min(p2X, ClientSize.Width - boxSize));
             p2Y = Math.Max(0, Math.Min(p2Y, ClientSize.Height - boxSize));
 
@@ -5546,19 +6092,29 @@ namespace gamething
                 }
             }
 
-            // P2 ability activations
-            if (input.ActivateSuper && !superActive && superCooldown <= 0)
+            // P2 ability activations — consume the latched trigger after handling
+            if (input.ActivateSuper)
             {
-                superActive = true;
-                superTimer = superDuration;
-                reloading = false;
-                reloadTimer = 0f;
+                if (!superActive && superCooldown <= 0)
+                {
+                    superActive = true;
+                    superTimer = superDuration;
+                    reloading = false;
+                    reloadTimer = 0f;
+                }
+                latestP2Input.ActivateSuper = false;
+            }
+            if (input.ActivateWall)
+            {
+                latestP2Input.ActivateWall = false;
             }
             if (input.ActivateWall && !wallActive && wallCooldown <= 0)
             {
                 wallActive = true;
                 wallTimer = wallDuration;
                 wallCooldown = wallCooldownTime;
+                // p2 wall activation aims from p2's center, not the host's center
+                // (handled below — boxWall vs tempWall use p2X/p2Y).
                 if (boxWall)
                 {
                     float cx2 = p2X + playerSize / 2;
@@ -5590,13 +6146,15 @@ namespace gamething
             if (input.UpgradePurchaseIndex >= 0)
             {
                 ApplyUpgradeByIndex(input.UpgradePurchaseIndex);
+                latestP2Input.UpgradePurchaseIndex = -1;
             }
         }
 
         private static readonly int[] UpgradeCosts = {
             190, 450, 470, 500, 510, 600, 610, 650, 660, 670, 690, 730, 750, 790, 800, 800,
             900, 950, 950, 1000, 1010, 1200, 1230, 1250, 1290, 1300, 1350, 1390, 1410, 1600,
-            2200, 3100, 950, 750, 900, 1300, 600, 1400, 820, 1500, 1400, 1100, 1200, 1100
+            2200, 3100, 950, 750, 900, 1300, 600, 1400, 820, 1500, 1400, 1100, 1200, 1100,
+            1220
         };
 
         private void ApplyUpgradeByIndex(int index)
@@ -5653,13 +6211,31 @@ namespace gamething
                 case 41: bloodMoney = true; break;
                 case 42: parasiteImmune = true; break;
                 case 43: lastStand = true; break;
+                case 44: smartBounce = true; ricochetBounces += 1; break;
             }
         }
 
         private void InitMultiplayerCallbacks()
         {
             if (netManager == null) return;
-            netManager.OnPlayerInputReceived += input => latestP2Input = input;
+            netManager.OnPlayerInputReceived += input =>
+            {
+                // Latch one-shot triggers from previous packets so they survive until
+                // the host's next tick consumes them. Without this, a trigger packet
+                // could be silently overwritten by a follow-up input packet, causing
+                // random ability/dash drops on p2.
+                bool latchedSuper = latestP2Input.ActivateSuper || input.ActivateSuper;
+                bool latchedWall = latestP2Input.ActivateWall || input.ActivateWall;
+                bool latchedDash = latestP2Input.Dashing || input.Dashing;
+                int latchedUpgrade = input.UpgradePurchaseIndex >= 0
+                    ? input.UpgradePurchaseIndex
+                    : latestP2Input.UpgradePurchaseIndex;
+                latestP2Input = input;
+                latestP2Input.ActivateSuper = latchedSuper;
+                latestP2Input.ActivateWall = latchedWall;
+                latestP2Input.Dashing = latchedDash;
+                latestP2Input.UpgradePurchaseIndex = latchedUpgrade;
+            };
             netManager.OnGameStateReceived += state => latestGameState = state;
             netManager.OnPeerLeft += () =>
             {
@@ -5673,142 +6249,239 @@ namespace gamething
 
         private void ShowMultiplayerMenu()
         {
+            // Hide menu buttons (same as Preferences) so alpha overlay covers them
             menuPlayBtn.Visible = false;
             menuQuitBtn.Visible = false;
-            menuPrefsBtn.Visible = false;
-            menuBestiaryBtn.Visible = false;
-            menuHistoryBtn.Visible = false;
+            if (menuPrefsBtn != null) menuPrefsBtn.Visible = false;
+            if (menuBestiaryBtn != null) menuBestiaryBtn.Visible = false;
+            if (menuHistoryBtn != null) menuHistoryBtn.Visible = false;
+            if (menuAchievementsBtn != null) menuAchievementsBtn.Visible = false;
+            if (menuMultiplayerBtn != null) menuMultiplayerBtn.Visible = false;
 
             List<Control> mpControls = new();
 
+            showDimOverlay = true;
+            this.Invalidate();
+
+            // Painted centered panel backdrop
+            int panelW = (int)(420 * scale);
+            int panelH = (int)(500 * scale);
+            int panelX = (ClientSize.Width - panelW) / 2;
+            int panelY = (ClientSize.Height - panelH) / 2;
+
+            Panel mpPanel = new Panel();
+            mpPanel.Size = new Size(panelW, panelH);
+            mpPanel.Location = new Point(panelX, panelY);
+            mpPanel.BackColor = Color.FromArgb(18, 18, 28);
+            typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(mpPanel, true);
+            mpPanel.Paint += (s, pe) =>
+            {
+                var g = pe.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                int r = (int)(16 * scale);
+                var rect = new Rectangle(0, 0, mpPanel.Width - 1, mpPanel.Height - 1);
+                using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                path.AddArc(rect.X, rect.Y, r, r, 180, 90);
+                path.AddArc(rect.Right - r, rect.Y, r, r, 270, 90);
+                path.AddArc(rect.Right - r, rect.Bottom - r, r, r, 0, 90);
+                path.AddArc(rect.X, rect.Bottom - r, r, r, 90, 90);
+                path.CloseFigure();
+                using var bgBrush = new SolidBrush(Color.FromArgb(230, 18, 18, 28));
+                g.FillPath(bgBrush, path);
+                using var borderPen2 = new Pen(Color.FromArgb(100, 60, 110, 180), 2 * scale);
+                g.DrawPath(borderPen2, path);
+            };
+            mpControls.Add(mpPanel);
+
+            // Helper: position relative to panel interior
+            int pad = (int)(24 * scale);
+            int innerW = panelW - pad * 2;
+            int yOff = pad;
+
             Label titleLabel = new Label();
-            titleLabel.Text = "🌐 MULTIPLAYER";
-            titleLabel.Font = new Font("Arial", 18, FontStyle.Bold);
-            titleLabel.ForeColor = Color.White;
-            titleLabel.Size = new Size(300, 40);
-            titleLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 100);
-            mpControls.Add(titleLabel);
+            titleLabel.Text = "MULTIPLAYER";
+            titleLabel.Font = new Font("Arial", (int)(18 * scale), FontStyle.Bold);
+            titleLabel.ForeColor = Color.FromArgb(120, 160, 255);
+            titleLabel.Size = new Size(innerW, (int)(35 * scale));
+            titleLabel.Location = new Point(pad, yOff);
+            titleLabel.TextAlign = ContentAlignment.MiddleCenter;
+            titleLabel.BackColor = Color.Transparent;
+            mpPanel.Controls.Add(titleLabel);
+            yOff += (int)(42 * scale);
 
             Label statusLabel = new Label();
             statusLabel.Text = "Choose Host or Join";
-            statusLabel.Font = new Font("Arial", 11);
+            statusLabel.Font = new Font("Arial", (int)(10 * scale));
             statusLabel.ForeColor = Color.Gray;
-            statusLabel.Size = new Size(500, 25);
-            statusLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 55);
-            mpControls.Add(statusLabel);
+            statusLabel.Size = new Size(innerW, (int)(22 * scale));
+            statusLabel.Location = new Point(pad, yOff);
+            statusLabel.TextAlign = ContentAlignment.MiddleCenter;
+            statusLabel.BackColor = Color.Transparent;
+            mpPanel.Controls.Add(statusLabel);
+            yOff += (int)(30 * scale);
 
             // --- HOST section ---
             Button hostBtn = new Button();
-            hostBtn.Text = "🏠 Host Game";
-            hostBtn.Size = new Size(250, 50);
-            hostBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 15);
-            hostBtn.BackColor = Color.FromArgb(40, 100, 40);
+            hostBtn.Text = "Host Game";
+            hostBtn.Size = new Size(innerW, (int)(44 * scale));
+            hostBtn.Location = new Point(pad, yOff);
+            hostBtn.BackColor = Color.FromArgb(35, 90, 35);
             hostBtn.ForeColor = Color.White;
             hostBtn.FlatStyle = FlatStyle.Flat;
-            hostBtn.Font = new Font("Arial", 14, FontStyle.Bold);
+            hostBtn.FlatAppearance.BorderColor = Color.FromArgb(60, 140, 60);
+            hostBtn.Font = new Font("Arial", (int)(13 * scale), FontStyle.Bold);
             hostBtn.Cursor = Cursors.Hand;
-            mpControls.Add(hostBtn);
+            mpPanel.Controls.Add(hostBtn);
+            yOff += (int)(52 * scale);
 
             Label roomCodeLabel = new Label();
             roomCodeLabel.Text = "";
-            roomCodeLabel.Font = new Font("Consolas", 22, FontStyle.Bold);
+            roomCodeLabel.Font = new Font("Consolas", (int)(20 * scale), FontStyle.Bold);
             roomCodeLabel.ForeColor = Color.Gold;
-            roomCodeLabel.Size = new Size(400, 40);
-            roomCodeLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 45);
-            mpControls.Add(roomCodeLabel);
+            roomCodeLabel.Size = new Size(innerW, (int)(35 * scale));
+            roomCodeLabel.Location = new Point(pad, yOff);
+            roomCodeLabel.TextAlign = ContentAlignment.MiddleCenter;
+            roomCodeLabel.BackColor = Color.Transparent;
+            mpPanel.Controls.Add(roomCodeLabel);
+            yOff += (int)(38 * scale);
 
             Label ipInfoLabel = new Label();
             ipInfoLabel.Text = "";
-            ipInfoLabel.Font = new Font("Arial", 10);
+            ipInfoLabel.Font = new Font("Arial", (int)(9 * scale));
             ipInfoLabel.ForeColor = Color.FromArgb(150, 180, 220);
-            ipInfoLabel.Size = new Size(500, 45);
-            ipInfoLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 85);
-            mpControls.Add(ipInfoLabel);
+            ipInfoLabel.Size = new Size(innerW, (int)(40 * scale));
+            ipInfoLabel.Location = new Point(pad, yOff);
+            ipInfoLabel.TextAlign = ContentAlignment.MiddleCenter;
+            ipInfoLabel.BackColor = Color.Transparent;
+            mpPanel.Controls.Add(ipInfoLabel);
+            yOff += (int)(44 * scale);
 
             // --- OR ---
             Label orLabel = new Label();
-            orLabel.Text = "— OR —";
-            orLabel.Font = new Font("Arial", 11);
-            orLabel.ForeColor = Color.Gray;
-            orLabel.Size = new Size(250, 25);
-            orLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 130);
+            orLabel.Text = "--- OR JOIN ---";
+            orLabel.Font = new Font("Arial", (int)(9 * scale));
+            orLabel.ForeColor = Color.FromArgb(80, 80, 100);
+            orLabel.Size = new Size(innerW, (int)(20 * scale));
+            orLabel.Location = new Point(pad, yOff);
             orLabel.TextAlign = ContentAlignment.MiddleCenter;
-            mpControls.Add(orLabel);
+            orLabel.BackColor = Color.Transparent;
+            mpPanel.Controls.Add(orLabel);
+            yOff += (int)(24 * scale);
 
             // --- JOIN section ---
+            int fieldH = (int)(28 * scale);
+            int ipBoxW = (int)(180 * scale);
+            int codeBoxW = (int)(100 * scale);
+            int labelW = (int)(55 * scale);
+
             Label hostIpLabel = new Label();
-            hostIpLabel.Text = "Host IP:";
-            hostIpLabel.Font = new Font("Arial", 11);
+            hostIpLabel.Text = "IP:";
+            hostIpLabel.Font = new Font("Arial", (int)(10 * scale));
             hostIpLabel.ForeColor = Color.White;
-            hostIpLabel.Size = new Size(70, 25);
-            hostIpLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 162);
-            mpControls.Add(hostIpLabel);
+            hostIpLabel.Size = new Size(labelW, fieldH);
+            hostIpLabel.Location = new Point(pad, yOff + 2);
+            hostIpLabel.BackColor = Color.Transparent;
+            mpPanel.Controls.Add(hostIpLabel);
 
             TextBox hostIpBox = new TextBox();
-            hostIpBox.Font = new Font("Consolas", 12);
-            hostIpBox.Size = new Size(180, 30);
-            hostIpBox.Location = new Point((int)(115 * scaleX), ClientSize.Height / 2 + 160);
-            hostIpBox.BackColor = Color.FromArgb(30, 30, 45);
+            hostIpBox.Font = new Font("Consolas", (int)(11 * scale));
+            hostIpBox.Size = new Size(ipBoxW, fieldH);
+            hostIpBox.Location = new Point(pad + labelW, yOff);
+            hostIpBox.BackColor = Color.FromArgb(25, 25, 40);
             hostIpBox.ForeColor = Color.White;
             hostIpBox.BorderStyle = BorderStyle.FixedSingle;
-            mpControls.Add(hostIpBox);
+            mpPanel.Controls.Add(hostIpBox);
+            yOff += (int)(34 * scale);
 
             Label joinCodeLabel = new Label();
             joinCodeLabel.Text = "Code:";
-            joinCodeLabel.Font = new Font("Arial", 11);
+            joinCodeLabel.Font = new Font("Arial", (int)(10 * scale));
             joinCodeLabel.ForeColor = Color.White;
-            joinCodeLabel.Size = new Size(50, 25);
-            joinCodeLabel.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 197);
-            mpControls.Add(joinCodeLabel);
+            joinCodeLabel.Size = new Size(labelW, fieldH);
+            joinCodeLabel.Location = new Point(pad, yOff + 2);
+            joinCodeLabel.BackColor = Color.Transparent;
+            mpPanel.Controls.Add(joinCodeLabel);
 
             TextBox codeBox = new TextBox();
-            codeBox.Font = new Font("Consolas", 14);
-            codeBox.Size = new Size(110, 30);
-            codeBox.Location = new Point((int)(95 * scaleX), ClientSize.Height / 2 + 195);
-            codeBox.BackColor = Color.FromArgb(30, 30, 45);
+            codeBox.Font = new Font("Consolas", (int)(13 * scale));
+            codeBox.Size = new Size(codeBoxW, fieldH);
+            codeBox.Location = new Point(pad + labelW, yOff);
+            codeBox.BackColor = Color.FromArgb(25, 25, 40);
             codeBox.ForeColor = Color.White;
             codeBox.BorderStyle = BorderStyle.FixedSingle;
             codeBox.MaxLength = 5;
             codeBox.CharacterCasing = CharacterCasing.Upper;
-            mpControls.Add(codeBox);
+            mpPanel.Controls.Add(codeBox);
 
+            int joinBtnX = pad + labelW + codeBoxW + (int)(8 * scale);
             Button joinBtn = new Button();
-            joinBtn.Text = "🔗 Join";
-            joinBtn.Size = new Size(120, 50);
-            joinBtn.Location = new Point((int)(215 * scaleX), ClientSize.Height / 2 + 185);
-            joinBtn.BackColor = Color.FromArgb(40, 80, 140);
+            joinBtn.Text = "Join";
+            joinBtn.Size = new Size(innerW - labelW - codeBoxW - (int)(8 * scale), fieldH);
+            joinBtn.Location = new Point(joinBtnX, yOff);
+            joinBtn.BackColor = Color.FromArgb(35, 70, 130);
             joinBtn.ForeColor = Color.White;
             joinBtn.FlatStyle = FlatStyle.Flat;
-            joinBtn.Font = new Font("Arial", 14, FontStyle.Bold);
+            joinBtn.FlatAppearance.BorderColor = Color.FromArgb(50, 100, 180);
+            joinBtn.Font = new Font("Arial", (int)(11 * scale), FontStyle.Bold);
             joinBtn.Cursor = Cursors.Hand;
-            mpControls.Add(joinBtn);
+            mpPanel.Controls.Add(joinBtn);
+            yOff += (int)(38 * scale);
+
+            Button lanBtn = new Button();
+            lanBtn.Text = "Find LAN Host";
+            lanBtn.Size = new Size(innerW, (int)(28 * scale));
+            lanBtn.Location = new Point(pad, yOff);
+            lanBtn.BackColor = Color.FromArgb(30, 50, 80);
+            lanBtn.ForeColor = Color.FromArgb(160, 190, 230);
+            lanBtn.FlatStyle = FlatStyle.Flat;
+            lanBtn.FlatAppearance.BorderColor = Color.FromArgb(50, 80, 120);
+            lanBtn.Font = new Font("Arial", (int)(9 * scale));
+            lanBtn.Cursor = Cursors.Hand;
+            mpPanel.Controls.Add(lanBtn);
+            yOff += (int)(36 * scale);
+
+            Button readyBtn = new Button();
+            readyBtn.Text = "Ready";
+            readyBtn.Size = new Size(innerW, (int)(44 * scale));
+            readyBtn.Location = new Point(pad, yOff);
+            readyBtn.BackColor = Color.FromArgb(40, 120, 40);
+            readyBtn.ForeColor = Color.White;
+            readyBtn.FlatStyle = FlatStyle.Flat;
+            readyBtn.FlatAppearance.BorderColor = Color.FromArgb(60, 160, 60);
+            readyBtn.Font = new Font("Arial", (int)(13 * scale), FontStyle.Bold);
+            readyBtn.Cursor = Cursors.Hand;
+            readyBtn.Visible = false;
+            mpPanel.Controls.Add(readyBtn);
 
             Button startBtn = new Button();
-            startBtn.Text = "▶ Start Game";
-            startBtn.Size = new Size(250, 50);
-            startBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 250);
-            startBtn.BackColor = Color.FromArgb(40, 100, 40);
+            startBtn.Text = "Start Game";
+            startBtn.Size = new Size(innerW, (int)(44 * scale));
+            startBtn.Location = new Point(pad, yOff);
+            startBtn.BackColor = Color.FromArgb(35, 90, 35);
             startBtn.ForeColor = Color.White;
             startBtn.FlatStyle = FlatStyle.Flat;
-            startBtn.Font = new Font("Arial", 14, FontStyle.Bold);
+            startBtn.FlatAppearance.BorderColor = Color.FromArgb(60, 140, 60);
+            startBtn.Font = new Font("Arial", (int)(13 * scale), FontStyle.Bold);
             startBtn.Cursor = Cursors.Hand;
             startBtn.Visible = false;
-            mpControls.Add(startBtn);
+            mpPanel.Controls.Add(startBtn);
+            yOff += (int)(52 * scale);
 
             Button backBtn = new Button();
-            backBtn.Text = "◀ Back";
-            backBtn.Size = new Size(250, 35);
-            backBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 310);
-            backBtn.BackColor = Color.FromArgb(60, 60, 60);
-            backBtn.ForeColor = Color.White;
+            backBtn.Text = "Back";
+            backBtn.Size = new Size(innerW, (int)(32 * scale));
+            backBtn.Location = new Point(pad, yOff);
+            backBtn.BackColor = Color.FromArgb(50, 50, 55);
+            backBtn.ForeColor = Color.FromArgb(180, 180, 180);
             backBtn.FlatStyle = FlatStyle.Flat;
-            backBtn.Font = new Font("Arial", 12);
+            backBtn.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 90);
+            backBtn.Font = new Font("Arial", (int)(11 * scale));
             backBtn.Cursor = Cursors.Hand;
-            mpControls.Add(backBtn);
+            mpPanel.Controls.Add(backBtn);
 
             void Cleanup()
             {
-                foreach (var c in mpControls) this.Controls.Remove(c);
+                foreach (var c in mpControls) { this.Controls.Remove(c); c.Dispose(); }
                 if (netManager != null && !isMultiplayer)
                 {
                     netManager.Disconnect();
@@ -5818,18 +6491,24 @@ namespace gamething
                 {
                     embeddedRelay.Stop();
                     embeddedRelay = null;
+                    LanDiscovery.StopHost();
                 }
+                showDimOverlay = false;
+                this.Invalidate();
                 menuPlayBtn.Visible = true;
                 menuQuitBtn.Visible = true;
-                menuPrefsBtn.Visible = true;
-                menuBestiaryBtn.Visible = true;
-                menuHistoryBtn.Visible = true;
+                if (menuPrefsBtn != null) menuPrefsBtn.Visible = true;
+                if (menuBestiaryBtn != null) menuBestiaryBtn.Visible = true;
+                if (menuHistoryBtn != null) menuHistoryBtn.Visible = true;
+                if (menuAchievementsBtn != null) menuAchievementsBtn.Visible = true;
+                if (menuMultiplayerBtn != null) menuMultiplayerBtn.Visible = true;
             }
 
             void StartGame(bool asHost)
             {
                 isMultiplayer = true;
                 isNetHost = asHost;
+                showDimOverlay = false;
                 InitMultiplayerCallbacks();
                 if (asHost) netManager?.SendGameStart();
                 foreach (var c in mpControls) this.Controls.Remove(c);
@@ -5847,6 +6526,8 @@ namespace gamething
                 ApplyDifficulty();
                 ResetGame();
                 if (asHost) { p2X = posX + 50; p2Y = posY; p2Health = maxHealth; p2MaxHealth = maxHealth; }
+                lastTick = DateTime.Now;
+                this.Focus();
             }
 
             backBtn.Click += (s, e) => Cleanup();
@@ -5859,6 +6540,19 @@ namespace gamething
                     statusLabel.ForeColor = Color.Red;
                     return;
                 }
+                var hostWarn = MessageBox.Show(
+                    "Hosting a multiplayer game requires:\n\n" +
+                    "  • A reliable internet connection (good upload bandwidth)\n" +
+                    $"  • UDP port {EmbeddedRelay.Port} forwarded to this PC\n" +
+                    "    (or your friend on the same LAN)\n" +
+                    "  • Windows Firewall must allow this app\n\n" +
+                    "If your friend can't connect, the most common cause is that\n" +
+                    $"port {EmbeddedRelay.Port} (UDP) is not forwarded on your router.\n\n" +
+                    "Continue hosting?",
+                    "Host Multiplayer Game",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Information);
+                if (hostWarn != DialogResult.Yes) return;
                 // Start embedded relay server
                 embeddedRelay = new EmbeddedRelay();
                 try
@@ -5874,6 +6568,9 @@ namespace gamething
 
                 statusLabel.Text = "Server started! Connecting...";
                 statusLabel.ForeColor = Color.Yellow;
+
+                // Advertise this host on the LAN so peers can auto-discover us.
+                LanDiscovery.StartHost(playerName);
 
                 // Get public IP to show the player
                 ipInfoLabel.Text = "Fetching your public IP...";
@@ -5909,9 +6606,18 @@ namespace gamething
                 {
                     this.Invoke(() =>
                     {
-                        statusLabel.Text = $"{netManager.PeerName} joined! Ready to start.";
+                        statusLabel.Text = $"{netManager.PeerName} joined — waiting for them to ready up...";
                         statusLabel.ForeColor = Color.Gold;
                         p2Name = netManager.PeerName;
+                        startBtn.Visible = false; // wait for ready
+                    });
+                };
+                netManager.OnPlayerReady += () =>
+                {
+                    this.Invoke(() =>
+                    {
+                        statusLabel.Text = $"{netManager.PeerName} is ready! Start when you are.";
+                        statusLabel.ForeColor = Color.LimeGreen;
                         startBtn.Visible = true;
                     });
                 };
@@ -5988,14 +6694,26 @@ namespace gamething
                 {
                     this.Invoke(() =>
                     {
-                        statusLabel.Text = $"Joined {netManager.PeerName}'s room — waiting for host to start...";
+                        statusLabel.Text = $"Joined {netManager.PeerName}'s room — press Ready!";
                         statusLabel.ForeColor = Color.LimeGreen;
                         p2Name = netManager.PeerName;
+                        readyBtn.Visible = true;
                     });
                 };
                 netManager.OnGameStartReceived += () =>
                 {
                     this.Invoke(() => StartGame(false));
+                };
+                netManager.OnPeerLeft += () =>
+                {
+                    this.Invoke(() =>
+                    {
+                        statusLabel.Text = "Host disconnected";
+                        statusLabel.ForeColor = Color.Red;
+                        readyBtn.Visible = false;
+                        hostBtn.Enabled = true;
+                        joinBtn.Enabled = true;
+                    });
                 };
                 netManager.OnError += msg =>
                 {
@@ -6039,6 +6757,44 @@ namespace gamething
                     }
                 };
                 joinPollTimer.Start();
+            };
+
+            readyBtn.Click += (s, e) =>
+            {
+                if (netManager == null) return;
+                netManager.SendReady();
+                readyBtn.Enabled = false;
+                readyBtn.Text = "✔ Ready!";
+                readyBtn.BackColor = Color.FromArgb(30, 80, 30);
+                statusLabel.Text = "Ready! Waiting for host to start...";
+                statusLabel.ForeColor = Color.LimeGreen;
+            };
+
+            lanBtn.Click += (s, e) =>
+            {
+                statusLabel.Text = "Searching LAN...";
+                statusLabel.ForeColor = Color.Yellow;
+                lanBtn.Enabled = false;
+                Task.Run(() =>
+                {
+                    var hosts = LanDiscovery.FindHosts(1000);
+                    this.Invoke(() =>
+                    {
+                        lanBtn.Enabled = true;
+                        if (hosts.Count == 0)
+                        {
+                            statusLabel.Text = "No LAN hosts found";
+                            statusLabel.ForeColor = Color.Red;
+                            return;
+                        }
+                        var first = hosts[0];
+                        hostIpBox.Text = first.ip;
+                        statusLabel.Text = hosts.Count == 1
+                            ? $"Found {first.hostName} at {first.ip}"
+                            : $"Found {hosts.Count} hosts — using {first.hostName}";
+                        statusLabel.ForeColor = Color.LimeGreen;
+                    });
+                });
             };
 
             startBtn.Click += (s, e) => StartGame(true);

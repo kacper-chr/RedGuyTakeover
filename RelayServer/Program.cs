@@ -136,6 +136,7 @@ listener.NetworkReceiveEvent += (peer, reader, channel, deliveryMethod) =>
         case PacketType.PlayerInput:
         case PacketType.GameStart:
         case PacketType.GameOver:
+        case PacketType.PlayerReady:
         {
             if (!peerToRoom.TryGetValue(peer.Id, out var roomCode)) break;
             if (!rooms.TryGetValue(roomCode, out var room)) break;

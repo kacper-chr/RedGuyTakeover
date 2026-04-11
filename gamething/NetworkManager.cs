@@ -31,6 +31,7 @@ public class NetworkManager
     public event Action? OnPeerLeft;
     public event Action? OnRoomCreated;
     public event Action? OnRoomJoined;
+    public event Action? OnPlayerReady;
     public event Action<string>? OnError;
 
     public NetworkManager()
@@ -115,6 +116,8 @@ public class NetworkManager
         _writer.Reset();
         _writer.Put((byte)PacketType.GameState);
         state.Serialize(_writer);
+        // Sequenced is unreliable but ordered (no head-of-line blocking).
+        // GameStatePacket is now compact enough to fit a single MTU even during super.
         _serverPeer!.Send(_writer, DeliveryMethod.Sequenced);
     }
 
@@ -132,6 +135,14 @@ public class NetworkManager
         if (!IsConnected || !IsInRoom) return;
         _writer.Reset();
         _writer.Put((byte)PacketType.GameStart);
+        _serverPeer!.Send(_writer, DeliveryMethod.ReliableOrdered);
+    }
+
+    public void SendReady()
+    {
+        if (!IsConnected || !IsInRoom) return;
+        _writer.Reset();
+        _writer.Put((byte)PacketType.PlayerReady);
         _serverPeer!.Send(_writer, DeliveryMethod.ReliableOrdered);
     }
 
@@ -216,6 +227,12 @@ public class NetworkManager
             case PacketType.GameStart:
             {
                 OnGameStartReceived?.Invoke();
+                break;
+            }
+
+            case PacketType.PlayerReady:
+            {
+                OnPlayerReady?.Invoke();
                 break;
             }
         }

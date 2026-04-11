@@ -152,6 +152,7 @@ public struct GameStatePacket : INetSerializable
     public float ClientX, ClientY;
     public float ClientHealth, ClientMaxHealth;
     public bool ClientDashing;
+    public float ClientDashCooldown;
 
     // Game info
     public float TimeAlive;
@@ -181,6 +182,12 @@ public struct GameStatePacket : INetSerializable
     public float[] EnemyY;
     public bool[] EnemyAlive;
     public int[] EnemyType;
+    // Effect flag bitmask per enemy:
+    //   bit 0 = runner, bit 1 = berserker, bit 2 = parasitic,
+    //   bit 3 = phasing, bit 4 = visible
+    public byte[] EnemyEffectFlags;
+    // Enemy health encoded as byte (health * 16, clamped 0-255)
+    public byte[] EnemyHealthPacked;
 
     // Bullet count + packed data
     public int BulletCount;
@@ -211,6 +218,7 @@ public struct GameStatePacket : INetSerializable
         writer.Put(ClientX); writer.Put(ClientY);
         writer.Put(ClientHealth); writer.Put(ClientMaxHealth);
         writer.Put(ClientDashing);
+        writer.Put(ClientDashCooldown);
 
         writer.Put(TimeAlive);
         writer.Put(TotalKills);
@@ -236,30 +244,33 @@ public struct GameStatePacket : INetSerializable
             writer.Put(WallAngle[i]);
         }
 
-        writer.Put(EnemyCount);
+        writer.Put((ushort)EnemyCount);
         for (int i = 0; i < EnemyCount; i++)
         {
-            writer.Put(EnemyX[i]); writer.Put(EnemyY[i]);
+            // ushort-encoded normalized coordinates (0-1 -> 0-65535)
+            writer.Put(NormToUShort(EnemyX[i])); writer.Put(NormToUShort(EnemyY[i]));
             writer.Put(EnemyAlive[i]);
             writer.Put((byte)EnemyType[i]);
+            writer.Put(EnemyEffectFlags != null && i < EnemyEffectFlags.Length ? EnemyEffectFlags[i] : (byte)0);
+            writer.Put(EnemyHealthPacked != null && i < EnemyHealthPacked.Length ? EnemyHealthPacked[i] : (byte)0);
         }
 
-        writer.Put(BulletCount);
+        writer.Put((ushort)BulletCount);
         for (int i = 0; i < BulletCount; i++)
         {
-            writer.Put(BulletX[i]); writer.Put(BulletY[i]);
+            writer.Put(NormToUShort(BulletX[i])); writer.Put(NormToUShort(BulletY[i]));
         }
 
-        writer.Put(CoinCount);
+        writer.Put((ushort)CoinCount);
         for (int i = 0; i < CoinCount; i++)
         {
-            writer.Put(CoinX[i]); writer.Put(CoinY[i]);
+            writer.Put(NormToUShort(CoinX[i])); writer.Put(NormToUShort(CoinY[i]));
         }
 
-        writer.Put(EnemyBulletCount);
+        writer.Put((ushort)EnemyBulletCount);
         for (int i = 0; i < EnemyBulletCount; i++)
         {
-            writer.Put(EnemyBulletX[i]); writer.Put(EnemyBulletY[i]);
+            writer.Put(NormToUShort(EnemyBulletX[i])); writer.Put(NormToUShort(EnemyBulletY[i]));
         }
 
         writer.Put(HostDead);
@@ -276,6 +287,7 @@ public struct GameStatePacket : INetSerializable
         ClientX = reader.GetFloat(); ClientY = reader.GetFloat();
         ClientHealth = reader.GetFloat(); ClientMaxHealth = reader.GetFloat();
         ClientDashing = reader.GetBool();
+        ClientDashCooldown = reader.GetFloat();
 
         TimeAlive = reader.GetFloat();
         TotalKills = reader.GetInt();
@@ -306,43 +318,55 @@ public struct GameStatePacket : INetSerializable
             WallAngle[i] = reader.GetFloat();
         }
 
-        EnemyCount = reader.GetInt();
+        EnemyCount = reader.GetUShort();
         EnemyX = new float[EnemyCount];
         EnemyY = new float[EnemyCount];
         EnemyAlive = new bool[EnemyCount];
         EnemyType = new int[EnemyCount];
+        EnemyEffectFlags = new byte[EnemyCount];
+        EnemyHealthPacked = new byte[EnemyCount];
         for (int i = 0; i < EnemyCount; i++)
         {
-            EnemyX[i] = reader.GetFloat(); EnemyY[i] = reader.GetFloat();
+            EnemyX[i] = UShortToNorm(reader.GetUShort()); EnemyY[i] = UShortToNorm(reader.GetUShort());
             EnemyAlive[i] = reader.GetBool();
             EnemyType[i] = reader.GetByte();
+            EnemyEffectFlags[i] = reader.GetByte();
+            EnemyHealthPacked[i] = reader.GetByte();
         }
 
-        BulletCount = reader.GetInt();
+        BulletCount = reader.GetUShort();
         BulletX = new float[BulletCount];
         BulletY = new float[BulletCount];
         for (int i = 0; i < BulletCount; i++)
         {
-            BulletX[i] = reader.GetFloat(); BulletY[i] = reader.GetFloat();
+            BulletX[i] = UShortToNorm(reader.GetUShort()); BulletY[i] = UShortToNorm(reader.GetUShort());
         }
 
-        CoinCount = reader.GetInt();
+        CoinCount = reader.GetUShort();
         CoinX = new float[CoinCount];
         CoinY = new float[CoinCount];
         for (int i = 0; i < CoinCount; i++)
         {
-            CoinX[i] = reader.GetFloat(); CoinY[i] = reader.GetFloat();
+            CoinX[i] = UShortToNorm(reader.GetUShort()); CoinY[i] = UShortToNorm(reader.GetUShort());
         }
 
-        EnemyBulletCount = reader.GetInt();
+        EnemyBulletCount = reader.GetUShort();
         EnemyBulletX = new float[EnemyBulletCount];
         EnemyBulletY = new float[EnemyBulletCount];
         for (int i = 0; i < EnemyBulletCount; i++)
         {
-            EnemyBulletX[i] = reader.GetFloat(); EnemyBulletY[i] = reader.GetFloat();
+            EnemyBulletX[i] = UShortToNorm(reader.GetUShort()); EnemyBulletY[i] = UShortToNorm(reader.GetUShort());
         }
 
         HostDead = reader.GetBool();
         ClientDead = reader.GetBool();
     }
+
+    private static ushort NormToUShort(float v)
+    {
+        if (v < 0f) v = 0f; else if (v > 1f) v = 1f;
+        return (ushort)(v * 65535f);
+    }
+
+    private static float UShortToNorm(ushort v) => v / 65535f;
 }

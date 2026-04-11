@@ -1,0 +1,4 @@
+BUG LIST
+- some upgrades are inaccessible by p2 (I don't know if this is fixed, I just kept it in)
+- some upgrades p2 buys, but nothing happens (I don't know if this is fixed, I just kept it in)
+

@@ -156,6 +156,7 @@ public class EmbeddedRelay
             case PacketType.PlayerInput:
             case PacketType.GameStart:
             case PacketType.GameOver:
+            case PacketType.PlayerReady:
             {
                 if (!_peerToRoom.TryGetValue(peer.Id, out var roomCode)) break;
                 if (!_rooms.TryGetValue(roomCode, out var room)) break;

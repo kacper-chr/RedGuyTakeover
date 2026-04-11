@@ -16,4 +16,5 @@ public enum PacketType : byte
     PlayerInput = 11,
     GameStart = 12,
     GameOver = 13,
+    PlayerReady = 14,
 }

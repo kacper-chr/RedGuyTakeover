@@ -1,0 +1,34 @@
+STUFF FOR LATER UPDATES (don't do these yet)
+
+
+1.5.0
+- more difficulties. It will make the progression more gradual, add these to saves.dat with the code name stuff
+- a permanent currency that gives passive upgrades. Harder achievements give more 'red coins', which are for upgrades that save between sessions. The passives could include:
++0.1 spd for 5 red coins
++1 ammo for 3 red coins
+What I mean by harder achievements give more is like unlocking normal mode gives 1, unlocking nightmare gives 5, getting $500 in a run gives 1, getting $50,000 in a run gives 5, etc.
+
+1.6.0
+- SFX, VFX, and music. Once we get to this, just ask me for sound files
+- Replace preferences with a full settings menu, with tabs regarding performance, sound, preferences, and game data (like update, GitHub page, credits, etc.)
+
+1.7.0
+- add a versus mode to multiplayer? Players get to choose an amount of upgrades changed by the host, then the players brawl it out. No shared stuff, no monsters, no money
+
+1.8.0
+- A new asgore boss that has car
+
+1.9.0
+- Bestiary entries clicking stuff and it shows everything cool omg so cool
+
+1.10.0
+- A daily challenge that has a set seed, upgrades, and set passives, everyone plays the same way. Rewards red coins. Tracks in run history as 'Daily Challenge'
+
+1.11.0
+- Cosmetics and actual designs for stuff, you can get some of these cosmetics either from red coins or achievements award them
+
+1.12.0
+- Add a custom mode where you can control the spawning of enemy types and amount as well as change their damage, hp, speed. Unlock changes to certain enemies when they are introduced in the difficulties beaten
+
+1.13.0
+- enemy ai rework and seed wall generation
