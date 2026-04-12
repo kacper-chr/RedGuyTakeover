@@ -543,6 +543,12 @@ namespace gamething
             this.BackColor = Color.FromArgb(20, 20, 20);
             this.Shown += (s, e) =>
             {
+                AutoUpdater.RunUpdateAsAdmin = false;
+                AutoUpdater.ReportErrors = true;
+                AutoUpdater.ApplicationExitEvent += () =>
+                {
+                    Application.Exit();
+                };
                 AutoUpdater.Start("https://raw.githubusercontent.com/kacper-chr/RedGuyTakeover/main/update.xml");
                 scaleX = (float)ClientSize.Width / baseWidth;
                 scaleY = (float)ClientSize.Height / baseHeight;
