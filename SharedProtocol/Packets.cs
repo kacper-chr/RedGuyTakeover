@@ -254,6 +254,13 @@ public struct GameStatePacket : INetSerializable
     public float OrbitAngle;
     public float OrbitRadiusBonus;
     public float PlayerSize;
+    public int BulletSize;
+
+    // Player color (ARGB int)
+    public int HostPlayerColor;
+
+    // Purchased one-time upgrades bitmask (up to 64 upgrades, using 2 ints)
+    public long PurchasedUpgradesMask;
 
     // Turret positions for client rendering
     public int TurretCount;
@@ -336,6 +343,9 @@ public struct GameStatePacket : INetSerializable
         writer.Put(OrbitAngle);
         writer.Put(OrbitRadiusBonus);
         writer.Put(PlayerSize);
+        writer.Put(BulletSize);
+        writer.Put(HostPlayerColor);
+        writer.Put(PurchasedUpgradesMask);
 
         writer.Put((byte)TurretCount);
         for (int i = 0; i < TurretCount; i++)
@@ -436,6 +446,9 @@ public struct GameStatePacket : INetSerializable
         OrbitAngle = reader.GetFloat();
         OrbitRadiusBonus = reader.GetFloat();
         PlayerSize = reader.GetFloat();
+        BulletSize = reader.GetInt();
+        HostPlayerColor = reader.GetInt();
+        PurchasedUpgradesMask = reader.GetLong();
 
         TurretCount = reader.GetByte();
         TurretX = new float[TurretCount];

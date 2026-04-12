@@ -118,7 +118,7 @@ namespace gamething
         private int maxAmmo = 60;
         private bool reloading = false;
         private float reloadTimer = 0f;
-        private float reloadTime = 5f;
+        private float reloadTime = 3f;
         // --- Health ---
         private float health = 50;
         private float maxHealth = 50f;
@@ -421,6 +421,7 @@ namespace gamething
         private float p2HitCooldown = 0f;
         private float p2BlinkCooldown = 0f;
         private float p2TurretCooldown = 0f;
+        private Color p2Color_synced = Color.FromArgb(255, 80, 140, 255); // default blue for P2
         private bool hostDead = false;
         private int p2PendingUpgrade = -1; // client sends upgrade purchase to host
         private bool p2PendingSuper = false; // client wants to activate super
@@ -2599,9 +2600,9 @@ namespace gamething
             // Reload circle above host/local player
             if (reloading && !hostDead)
             {
-                float rcSize = 8 * scale;
+                float rcSize = 10 * scale;
                 float rcX = posX + playerSize / 2 - rcSize / 2;
-                float rcY = posY - rcSize - 6 * scale;
+                float rcY = posY - rcSize - 4 * scale;
                 float progress = reloadTime > 0 ? reloadTimer / reloadTime : 0f;
                 int sweepAngle = (int)(360 * progress);
                 using var rcPen = new Pen(Color.FromArgb(200, 255, 215, 0), 2.5f * scale);
@@ -2620,8 +2621,10 @@ namespace gamething
                     p2path.AddArc(p2X, p2Y + playerSize - r2, r2, r2, 90, 90);
                     p2path.CloseFigure();
                     int p2Alpha = p2Dead ? 60 : 255;
+                    Color baseP2Color = isNetHost ? Color.FromArgb(255, 80, 140, 255) : p2Color_synced;
                     Color p2Color = p2Dead ? Color.FromArgb(p2Alpha, 100, 100, 100) :
-                        p2Dashing ? Color.FromArgb(150, 100, 200, 255) : Color.FromArgb(255, 80, 140, 255);
+                        p2Dashing ? Color.FromArgb(150, baseP2Color.R, baseP2Color.G, baseP2Color.B) :
+                        Color.FromArgb(p2Alpha, baseP2Color.R, baseP2Color.G, baseP2Color.B);
                     e.Graphics.FillPath(new SolidBrush(p2Color), p2path);
                     e.Graphics.DrawPath(new Pen(Color.FromArgb(40, 80, 160), 2), p2path);
                 }
@@ -2644,9 +2647,9 @@ namespace gamething
                 // Reload circle above P2
                 if (reloading && !p2Dead)
                 {
-                    float rcSize = 8 * scale;
+                    float rcSize = 10 * scale;
                     float rcX = p2X + playerSize / 2 - rcSize / 2;
-                    float rcY = p2Y - rcSize - 6 * scale;
+                    float rcY = p2Y - rcSize - 4 * scale;
                     float progress = reloadTime > 0 ? reloadTimer / reloadTime : 0f;
                     int sweepAngle = (int)(360 * progress);
                     using var rcPen = new Pen(Color.FromArgb(200, 255, 215, 0), 2.5f * scale);
@@ -6029,6 +6032,9 @@ namespace gamething
                 OrbitAngle = orbitAngle,
                 OrbitRadiusBonus = orbitRadiusBonus,
                 PlayerSize = playerSize,
+                BulletSize = bulletSize,
+                HostPlayerColor = playerColor.ToArgb(),
+                PurchasedUpgradesMask = BuildPurchasedUpgradesMask(),
             };
 
             try
@@ -6140,6 +6146,20 @@ namespace gamething
             return pkt;
         }
 
+        private long BuildPurchasedUpgradesMask()
+        {
+            long mask = 0;
+            foreach (int idx in purchasedOneTimeUpgrades)
+                if (idx >= 0 && idx < 64) mask |= (1L << idx);
+            return mask;
+        }
+
+        private void ApplyPurchasedUpgradesMask(long mask)
+        {
+            for (int i = 0; i < 64; i++)
+                if ((mask & (1L << i)) != 0) purchasedOneTimeUpgrades.Add(i);
+        }
+
         private void ApplyGameState(GameStatePacket state)
         {
             try
@@ -6186,7 +6206,13 @@ namespace gamething
                 orbitAngle = state.OrbitAngle;
                 orbitRadiusBonus = state.OrbitRadiusBonus;
                 playerSize = (int)state.PlayerSize;
-                boxSize = playerSize; // keep boxSize in sync
+                bulletSize = state.BulletSize;
+
+                // Sync host's player color (shown as P2 on client)
+                p2Color_synced = Color.FromArgb(state.HostPlayerColor);
+
+                // Sync purchased upgrades so both players see them as bought
+                ApplyPurchasedUpgradesMask(state.PurchasedUpgradesMask);
 
                 // Sync turret positions for rendering
                 turrets.Clear();
@@ -6345,6 +6371,8 @@ namespace gamething
                 float p2DashPrevY = p2Y;
                 p2X += p2DashVelX * dashProg * deltaTime * 60f;
                 p2Y += p2DashVelY * dashProg * deltaTime * 60f;
+                if (ghostDash)
+                    dashTrail.Add((p2X, p2Y, dashTrailDuration));
                 if (CollidesWithWall(p2X, p2Y, boxSize))
                 {
                     p2X = p2DashPrevX;
