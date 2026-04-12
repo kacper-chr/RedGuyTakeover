@@ -416,11 +416,20 @@ namespace gamething
         private float p2DashCooldown = 0f;
         private string p2Name = "Player 2";
         private bool p2Dead = false;
+        private float p2ShootCooldown = 0f;
+        private int p2DoubleTapCounter = 0;
+        private float p2HitCooldown = 0f;
+        private float p2BlinkCooldown = 0f;
+        private float p2TurretCooldown = 0f;
         private bool hostDead = false;
         private int p2PendingUpgrade = -1; // client sends upgrade purchase to host
         private bool p2PendingSuper = false; // client wants to activate super
         private bool p2PendingWall = false; // client wants to activate wall
         private bool p2PendingDash = false; // client wants to dash (one-shot trigger)
+        private bool p2PendingBlink = false; // client wants to blink
+        private bool p2PendingTurret = false; // client wants to place turret
+        private bool p2PendingDecoy = false; // client wants to place decoy
+        private bool p2PendingSpeedTrap = false; // client wants to place speed trap
 
         // Client-side: latest game state from host
         private GameStatePacket? latestGameState = null;
@@ -664,7 +673,11 @@ namespace gamething
                     // isPaused is cleared in the upgrade menu's close handler
                     break;
                 case Keys.F:
-                    if (decoy && !decoyActive && decoyCooldown <= 0)
+                    if (isMultiplayer && !isNetHost)
+                    {
+                        p2PendingDecoy = true;
+                    }
+                    else if (decoy && !decoyActive && decoyCooldown <= 0)
                     {
                         decoyActive = true;
                         decoyTimer = decoyDuration;
@@ -674,7 +687,11 @@ namespace gamething
                     }
                     break;
                 case Keys.G:
-                    if (speedTrap && !speedTrapActive && speedTrapCooldown <= 0)
+                    if (isMultiplayer && !isNetHost)
+                    {
+                        p2PendingSpeedTrap = true;
+                    }
+                    else if (speedTrap && !speedTrapActive && speedTrapCooldown <= 0)
                     {
                         speedTrapActive = true;
                         speedTrapTimer = speedTrapDuration;
@@ -683,7 +700,11 @@ namespace gamething
                     }
                     break;
                 case Keys.H:
-                    if (turret && turretCooldown <= 0)
+                    if (isMultiplayer && !isNetHost)
+                    {
+                        p2PendingTurret = true;
+                    }
+                    else if (turret && turretCooldown <= 0)
                     {
                         turrets.Add((mousePos.X, mousePos.Y));
                         turretShootTimers.Add(0f);
@@ -885,6 +906,7 @@ namespace gamething
                                 enemyRespawnTimers[i] = enemyRespawnTime;
                                 totalKills++;
                                 health = Math.Min(health + lifeSteal, maxHealth);
+                                if (isMultiplayer && !p2Dead) p2Health = Math.Min(p2Health + lifeSteal, p2MaxHealth);
                             }
                         }
                     }
@@ -1222,7 +1244,26 @@ namespace gamething
                         bool isTank2 = i < enemyIsTank.Count && enemyIsTank[i];
                         float dmg2 = isTank2 ? enemyDamage * 3f : enemyDamage;
                         p2Health -= dmg2 * deltaTime * 2f;
-                        if (p2Health <= 0) { p2Health = 0; p2Dead = true; }
+                        if (bloodMoney)
+                        {
+                            int scoreToAdd = (int)(dmg2 * 2);
+                            for (int c = 0; c < scoreToAdd; c++)
+                                coins.Add((p2X + playerSize / 2, p2Y + playerSize / 2, 0f, 0f));
+                        }
+                        if (rapidReload)
+                            ammo = Math.Min(ammo + 5, maxAmmo);
+                        if (thorns)
+                            DamageEnemy(i, 1f);
+                        if (p2Health <= 0)
+                        {
+                            p2Health = 0;
+                            p2Dead = true;
+                            if (hostDead)
+                            {
+                                netManager?.SendGameOver();
+                                HandleMultiplayerGameOver();
+                            }
+                        }
                     }
                     if (i < enemyCanShoot.Count && enemyCanShoot[i])
                     {
@@ -1614,7 +1655,7 @@ namespace gamething
                     ny + bulletSize > bossY && ny < bossY + bossSize * scale)
                 {
                     float bulletDmg = (explosiveFinish && nextBulletIsLast) ? 3f : 1f;
-                    if (lastStand && health <= 15f) bulletDmg *= 2f;
+                    if (lastStand && (health <= 15f || (isMultiplayer && p2Health <= 15f))) bulletDmg *= 2f;
                     bossHealth -= bulletDmg;
                     bossBulletHitCooldown = bossBulletHitCooldownTime;
                     if (bossHealth <= 0)
@@ -1632,7 +1673,7 @@ namespace gamething
                         ny + bulletSize > enemies[i].y && ny < enemies[i].y + boxSize)
                     {
                         float bulletDmg = (explosiveFinish && nextBulletIsLast) ? 3f : 1f;
-                        if (lastStand && health <= 15f) bulletDmg *= 2f;
+                        if (lastStand && (health <= 15f || (isMultiplayer && p2Health <= 15f))) bulletDmg *= 2f;
                         if (rng.NextDouble() >= enemyReinforceChance)
                             DamageEnemy(i, bulletDmg);
                         if (ricochetExplosion && bounces > 0)
@@ -1678,9 +1719,26 @@ namespace gamething
                 float newDelay = Math.Max(0f, p.spawnDelay - deltaTime);
                 float newHitCooldown = Math.Max(0f, p.hitCooldown - deltaTime);
 
-                float dx = posX + playerSize / 2 - p.x;
-                float dy = posY + playerSize / 2 - p.y;
+                // Chase closest player (host or p2)
+                float hostCX = posX + playerSize / 2;
+                float hostCY = posY + playerSize / 2;
+                float dx = hostCX - p.x;
+                float dy = hostCY - p.y;
                 float dist = (float)Math.Sqrt(dx * dx + dy * dy);
+
+                if (isMultiplayer && isNetHost && !p2Dead)
+                {
+                    float p2CX = p2X + playerSize / 2;
+                    float p2CY = p2Y + playerSize / 2;
+                    float dx2 = p2CX - p.x;
+                    float dy2 = p2CY - p.y;
+                    float dist2 = (float)Math.Sqrt(dx2 * dx2 + dy2 * dy2);
+                    if (dist2 < dist)
+                    {
+                        dx = dx2; dy = dy2; dist = dist2;
+                    }
+                }
+
                 float newX = p.x;
                 float newY = p.y;
                 float newVelX = p.velX;
@@ -1695,9 +1753,10 @@ namespace gamething
                 newX += newVelX * deltaTime;
                 newY += newVelY * deltaTime;
 
+                // Check collision with host
                 if (newDelay <= 0 &&
-    newX + parasiteSize > posX && newX < posX + playerSize &&
-    newY + parasiteSize > posY && newY < posY + playerSize)
+                    newX + parasiteSize > posX && newX < posX + playerSize &&
+                    newY + parasiteSize > posY && newY < posY + playerSize)
                 {
                     if (!parasiteImmune && newHitCooldown <= 0)
                     {
@@ -1705,6 +1764,30 @@ namespace gamething
                         newHitCooldown = 0.5f;
                         if (health <= 0)
                             HandlePlayerDeath();
+                    }
+                    newParasites.Add((newX, newY, newVelX, newVelY, newTimer, newDelay, newHitCooldown));
+                    continue;
+                }
+
+                // Check collision with p2
+                if (isMultiplayer && isNetHost && !p2Dead && newDelay <= 0 &&
+                    newX + parasiteSize > p2X && newX < p2X + playerSize &&
+                    newY + parasiteSize > p2Y && newY < p2Y + playerSize)
+                {
+                    if (!parasiteImmune && newHitCooldown <= 0)
+                    {
+                        p2Health -= enemyDamage * 0.5f;
+                        newHitCooldown = 0.5f;
+                        if (p2Health <= 0)
+                        {
+                            p2Health = 0;
+                            p2Dead = true;
+                            if (hostDead)
+                            {
+                                netManager?.SendGameOver();
+                                HandleMultiplayerGameOver();
+                            }
+                        }
                     }
                     newParasites.Add((newX, newY, newVelX, newVelY, newTimer, newDelay, newHitCooldown));
                     continue;
@@ -1739,6 +1822,30 @@ namespace gamething
                     }
                     continue;
                 }
+                // P2 enemy bullet collision
+                if (isMultiplayer && isNetHost && !p2Dead && !p2Dashing && p2HitCooldown <= 0 &&
+                    nx < p2X + playerSize && nx + enemyBulletSize > p2X &&
+                    ny < p2Y + playerSize && ny + enemyBulletSize > p2Y)
+                {
+                    p2Health -= enemyBulletDamage;
+                    if (bloodMoney)
+                    {
+                        int scoreToAdd = (int)(enemyBulletDamage * 2);
+                        for (int c = 0; c < scoreToAdd; c++)
+                            coins.Add((p2X + playerSize / 2, p2Y + playerSize / 2, 0f, 0f));
+                    }
+                    if (rapidReload)
+                        ammo = Math.Min(ammo + 5, maxAmmo);
+                    if (thorns) { /* no enemy to damage from bullet */ }
+                    p2HitCooldown = hitCooldownTime;
+                    if (p2Health <= 0)
+                    {
+                        p2Health = 0;
+                        p2Dead = true;
+                        if (hostDead) { netManager?.SendGameOver(); HandleMultiplayerGameOver(); }
+                    }
+                    continue;
+                }
                 if (nx > 0 && nx < ClientSize.Width && ny > 0 && ny < ClientSize.Height)
                     newEnemyBullets.Add((nx, ny, b.velX, b.velY));
             }
@@ -1747,8 +1854,16 @@ namespace gamething
             var newCoins = new List<(float x, float y, float velX, float velY)>();
             foreach (var c in coins)
             {
-                float dirX = posX - c.x;
-                float dirY = posY - c.y;
+                // Attract to closest living player
+                float attractX = posX, attractY = posY;
+                if (isMultiplayer && isNetHost && !p2Dead)
+                {
+                    float d1 = hostDead ? float.MaxValue : (posX - c.x) * (posX - c.x) + (posY - c.y) * (posY - c.y);
+                    float d2 = (p2X - c.x) * (p2X - c.x) + (p2Y - c.y) * (p2Y - c.y);
+                    if (d2 < d1) { attractX = p2X; attractY = p2Y; }
+                }
+                float dirX = attractX - c.x;
+                float dirY = attractY - c.y;
                 float dist = (float)Math.Sqrt(dirX * dirX + dirY * dirY);
                 float newVelX = c.velX;
                 float newVelY = c.velY;
@@ -1757,12 +1872,24 @@ namespace gamething
                 newVelY *= 0.9f;
                 float nx = c.x + newVelX * deltaTime * 60;
                 float ny = c.y + newVelY * deltaTime * 60;
-                if (nx < posX + boxSize && nx + coinSize > posX && ny < posY + boxSize && ny + coinSize > posY)
+                // Host collision
+                bool collected = false;
+                if (!hostDead && nx < posX + boxSize && nx + coinSize > posX && ny < posY + boxSize && ny + coinSize > posY)
+                    collected = true;
+                // P2 collision
+                if (!collected && isMultiplayer && isNetHost && !p2Dead &&
+                    nx < p2X + boxSize && nx + coinSize > p2X && ny < p2Y + boxSize && ny + coinSize > p2Y)
+                    collected = true;
+                if (collected)
                 {
                     score += coinWorth;
                     totalScore += coinWorth;
                     totalCoinsCollected++;
-                    if (medic) health = Math.Min(health + 0.5f, maxHealth);
+                    if (medic)
+                    {
+                        health = Math.Min(health + 0.5f, maxHealth);
+                        if (isMultiplayer && !p2Dead) p2Health = Math.Min(p2Health + 0.5f, p2MaxHealth);
+                    }
                 }
                 else
                     newCoins.Add((nx, ny, newVelX, newVelY));
@@ -1792,6 +1919,9 @@ namespace gamething
             }
             if (wallCooldown > 0) wallCooldown -= deltaTime;
             if (hitCooldown > 0) hitCooldown -= deltaTime;
+            if (p2HitCooldown > 0) p2HitCooldown -= deltaTime;
+            if (p2BlinkCooldown > 0) p2BlinkCooldown -= deltaTime;
+            if (p2TurretCooldown > 0) p2TurretCooldown -= deltaTime;
             // Don't tick regen for a dead player (single or multi). Otherwise the
             // dead player keeps gaining health silently.
             if (!hostDead && health > 0)
@@ -1861,6 +1991,54 @@ namespace gamething
                     }
                 }
             }
+            // P2 orbit (multiplayer — same orbit upgrades apply to both players)
+            if (orbitCount > 0 && isMultiplayer && isNetHost && !p2Dead)
+            {
+                float angleStep = (float)(Math.PI * 2 / orbitCount);
+                for (int o = 0; o < orbitCount; o++)
+                {
+                    float angle = orbitAngle + angleStep * o + (float)Math.PI; // offset so they don't overlap
+                    float currentOrbitRadius = (orbitRadius + orbitRadiusBonus) * scale;
+                    float ox = p2X + playerSize / 2 + (float)Math.Cos(angle) * currentOrbitRadius;
+                    float oy = p2Y + playerSize / 2 + (float)Math.Sin(angle) * currentOrbitRadius;
+                    for (int i = 0; i < enemies.Count; i++)
+                    {
+                        if (!enemyAlive[i]) continue;
+                        if (ox > enemies[i].x && ox < enemies[i].x + boxSize &&
+                            oy > enemies[i].y && oy < enemies[i].y + boxSize)
+                        {
+                            DamageEnemy(i, 1f);
+                            if (orbitalStrike && !orbitalSlowedEnemies.Contains(i))
+                            {
+                                orbitalSlowedEnemies.Add(i);
+                                orbitalSlowTimers.Add(2f);
+                            }
+                            if (explosiveOrbit)
+                            {
+                                for (int j = 0; j < enemies.Count; j++)
+                                {
+                                    if (j == i || !enemyAlive[j]) continue;
+                                    float dx = enemies[j].x - enemies[i].x;
+                                    float dy = enemies[j].y - enemies[i].y;
+                                    float dist = (float)Math.Sqrt(dx * dx + dy * dy);
+                                    if (dist < explosiveOrbitRadius * scale)
+                                        DamageEnemy(j, explosiveOrbitDamage, false);
+                                }
+                            }
+                        }
+                    }
+                    if (bossAlive && bossOrbitHitCooldown <= 0 &&
+                        ox > bossX && ox < bossX + bossSize * scale &&
+                        oy > bossY && oy < bossY + bossSize * scale)
+                    {
+                        bossHealth -= 1f;
+                        bossOrbitHitCooldown = bossOrbitHitCooldownTime;
+                        if (bossHealth <= 0)
+                            HandleBossDefeated();
+                    }
+                }
+            }
+
             if (bossOrbitHitCooldown > 0)
                 bossOrbitHitCooldown -= deltaTime;
 
@@ -1981,41 +2159,59 @@ namespace gamething
                 {
                     netManager.PollEvents();
 
-                    if (isNetHost)
+                    // Don't send/apply game data during game over (death screen, ready-up)
+                    if (!handlingMpGameOver)
                     {
-                        ApplyP2Input(latestP2Input);
-                        var state = BuildGameStatePacket();
-                        netManager.SendGameState(state);
-                    }
-                    else
-                    {
-                        // Normalize aim coords to 0-1 so host can scale to its resolution
-                        float cw = ClientSize.Width;
-                        float ch = ClientSize.Height;
-                        var input = new PlayerInputPacket
+                        if (isNetHost)
                         {
-                            MoveX = velocityX,
-                            MoveY = velocityY,
-                            AimX = mousePos.X / cw,
-                            AimY = mousePos.Y / ch,
-                            Shooting = mouseHeld,
-                            // Dashing is now used as a one-shot trigger from the client,
-                            // not a continuous state — host owns the dash simulation for p2.
-                            Dashing = p2PendingDash,
-                            ActivateSuper = p2PendingSuper,
-                            ActivateWall = p2PendingWall,
-                            WallAimX = mousePos.X / cw,
-                            WallAimY = mousePos.Y / ch,
-                            UpgradePurchaseIndex = p2PendingUpgrade,
-                        };
-                        p2PendingSuper = false;
-                        p2PendingWall = false;
-                        p2PendingDash = false;
-                        p2PendingUpgrade = -1;
-                        netManager.SendPlayerInput(input);
+                            ApplyP2Input(latestP2Input);
+                            var state = BuildGameStatePacket();
+                            netManager.SendGameState(state);
+                        }
+                        else
+                        {
+                            // Normalize aim coords to 0-1 so host can scale to its resolution
+                            float cw = ClientSize.Width;
+                            float ch = ClientSize.Height;
+                            var input = new PlayerInputPacket
+                            {
+                                MoveX = velocityX,
+                                MoveY = velocityY,
+                                AimX = mousePos.X / cw,
+                                AimY = mousePos.Y / ch,
+                                Shooting = mouseHeld,
+                                Dashing = p2PendingDash,
+                                ActivateSuper = p2PendingSuper,
+                                ActivateWall = p2PendingWall,
+                                WallAimX = mousePos.X / cw,
+                                WallAimY = mousePos.Y / ch,
+                                UpgradePurchaseIndex = p2PendingUpgrade,
+                                ActivateBlink = p2PendingBlink,
+                                BlinkAimX = mousePos.X / cw,
+                                BlinkAimY = mousePos.Y / ch,
+                                PlaceTurret = p2PendingTurret,
+                                TurretAimX = mousePos.X / cw,
+                                TurretAimY = mousePos.Y / ch,
+                                ActivateDecoy = p2PendingDecoy,
+                                DecoyAimX = mousePos.X / cw,
+                                DecoyAimY = mousePos.Y / ch,
+                                ActivateSpeedTrap = p2PendingSpeedTrap,
+                                SpeedTrapAimX = mousePos.X / cw,
+                                SpeedTrapAimY = mousePos.Y / ch,
+                            };
+                            p2PendingSuper = false;
+                            p2PendingWall = false;
+                            p2PendingDash = false;
+                            p2PendingUpgrade = -1;
+                            p2PendingBlink = false;
+                            p2PendingTurret = false;
+                            p2PendingDecoy = false;
+                            p2PendingSpeedTrap = false;
+                            netManager.SendPlayerInput(input);
 
-                        if (latestGameState.HasValue)
-                            ApplyGameState(latestGameState.Value);
+                            if (latestGameState.HasValue)
+                                ApplyGameState(latestGameState.Value);
+                        }
                     }
                 }
                 catch { /* network error, skip frame */ }
@@ -2400,6 +2596,18 @@ namespace gamething
                 e.Graphics.DrawPath(borderPen, path);
             }
 
+            // Reload circle above host/local player
+            if (reloading && !hostDead)
+            {
+                float rcSize = 8 * scale;
+                float rcX = posX + playerSize / 2 - rcSize / 2;
+                float rcY = posY - rcSize - 6 * scale;
+                float progress = reloadTime > 0 ? reloadTimer / reloadTime : 0f;
+                int sweepAngle = (int)(360 * progress);
+                using var rcPen = new Pen(Color.FromArgb(200, 255, 215, 0), 2.5f * scale);
+                e.Graphics.DrawArc(rcPen, rcX, rcY, rcSize, rcSize, -90, sweepAngle);
+            }
+
             // Draw Player 2 in multiplayer
             if (isMultiplayer)
             {
@@ -2432,6 +2640,17 @@ namespace gamething
                     float p2HpFill = Math.Max(0, p2Health / p2MaxHealth);
                     e.Graphics.FillRectangle(Brushes.DarkGray, hbX, hbY, hbW, 4 * scale);
                     e.Graphics.FillRectangle(Brushes.DodgerBlue, hbX, hbY, hbW * p2HpFill, 4 * scale);
+                }
+                // Reload circle above P2
+                if (reloading && !p2Dead)
+                {
+                    float rcSize = 8 * scale;
+                    float rcX = p2X + playerSize / 2 - rcSize / 2;
+                    float rcY = p2Y - rcSize - 6 * scale;
+                    float progress = reloadTime > 0 ? reloadTimer / reloadTime : 0f;
+                    int sweepAngle = (int)(360 * progress);
+                    using var rcPen = new Pen(Color.FromArgb(200, 255, 215, 0), 2.5f * scale);
+                    e.Graphics.DrawArc(rcPen, rcX, rcY, rcSize, rcSize, -90, sweepAngle);
                 }
             }
 
@@ -2617,6 +2836,19 @@ namespace gamething
                     float oy = posY + playerSize / 2 + (float)Math.Sin(angle) * currentOrbitRadius;
                     e.Graphics.FillEllipse(Brushes.Cyan, ox - 6, oy - 6, 12, 12);
                     e.Graphics.DrawEllipse(borderPen, ox - 6, oy - 6, 12, 12);
+                }
+                // P2 orbit rendering
+                if (isMultiplayer && !p2Dead)
+                {
+                    for (int o = 0; o < orbitCount; o++)
+                    {
+                        float angle = orbitAngle + angleStep * o + (float)Math.PI;
+                        float currentOrbitRadius = (orbitRadius + orbitRadiusBonus) * scale;
+                        float ox = p2X + playerSize / 2 + (float)Math.Cos(angle) * currentOrbitRadius;
+                        float oy = p2Y + playerSize / 2 + (float)Math.Sin(angle) * currentOrbitRadius;
+                        e.Graphics.FillEllipse(Brushes.Cyan, ox - 6, oy - 6, 12, 12);
+                        e.Graphics.DrawEllipse(borderPen, ox - 6, oy - 6, 12, 12);
+                    }
                 }
             }
             // Draw parasites
@@ -2972,7 +3204,7 @@ namespace gamething
                 new SolidBrush(diffLabelColors[difficulty]),
                 22 * scaleX, (int)(105 * scaleY));
 
-            if (lastStand && health <= 15f)
+            if (lastStand && (health <= 15f || (isMultiplayer && p2Health <= 15f)))
             {
                 float pulse = (float)Math.Abs(Math.Sin(gameStartTimer * 5f));
                 int a = (int)(pulse * 180);
@@ -3050,11 +3282,18 @@ namespace gamething
                 }
                 return;
             }
-            else if (e.Button == MouseButtons.Right && blink && blinkCooldown <= 0)
+            else if (e.Button == MouseButtons.Right && blink)
             {
-                posX = Math.Max(0, Math.Min(mousePos.X - boxSize / 2, ClientSize.Width - boxSize));
-                posY = Math.Max(0, Math.Min(mousePos.Y - boxSize / 2, ClientSize.Height - boxSize));
-                blinkCooldown = blinkCooldownTime;
+                if (isMultiplayer && !isNetHost)
+                {
+                    p2PendingBlink = true;
+                }
+                else if (blinkCooldown <= 0)
+                {
+                    posX = Math.Max(0, Math.Min(mousePos.X - boxSize / 2, ClientSize.Width - boxSize));
+                    posY = Math.Max(0, Math.Min(mousePos.Y - boxSize / 2, ClientSize.Height - boxSize));
+                    blinkCooldown = blinkCooldownTime;
+                }
             }
             else if (e.Button == MouseButtons.Middle)
             {
@@ -3136,7 +3375,7 @@ namespace gamething
             maxAmmo = 60; ammo = maxAmmo; reloading = false; reloadTimer = 0f;
             maxHealth = 50f; health = maxHealth; hitCooldown = 0f; regenTimer = 0f;
             dashCooldown = 0f; lifeSteal = 0; fireRateBonus = 0f; scorePerSecond = 1;
-            reloadTime = 5f; dashDuration = 0.7f; wallDuration = 20f;
+            reloadTime = 3f; dashDuration = 0.7f; wallDuration = 20f;
             ghostDash = false; ricochetBounces = 0; smartBounce = false;
             bulletSize = (int)(6 * scale); coinSize = (int)(6 * scale);
             enemyBulletSize = (int)(10 * scale); enemyBulletSpeed = 12f * scale;
@@ -3160,6 +3399,10 @@ namespace gamething
             hostDead = false; p2Dead = false;
             p2PendingUpgrade = -1; p2PendingSuper = false; p2PendingWall = false;
             p2Dashing = false; p2DashTimer = 0f; p2DashVelX = 0f; p2DashVelY = 0f; p2DashCooldown = 0f;
+            p2ShootCooldown = 0f; p2DoubleTapCounter = 0; p2HitCooldown = 0f;
+            p2BlinkCooldown = 0f; p2TurretCooldown = 0f;
+            p2PendingBlink = false; p2PendingTurret = false;
+            p2PendingDecoy = false; p2PendingSpeedTrap = false;
             runnerEnemyChance = 0.05f;
             medic = false; doubleTap = false; doubleTapCounter = 0;
             explosiveFinish = false; nextBulletIsLast = false;
@@ -4178,6 +4421,7 @@ namespace gamething
                 enemyRespawnTimers[i] = enemyRespawnTime;
                 totalKills++;
                 health = Math.Min(health + lifeSteal, maxHealth);
+                if (isMultiplayer && !p2Dead) p2Health = Math.Min(p2Health + lifeSteal, p2MaxHealth);
                 if (i < enemyIsParasitic.Count && enemyIsParasitic[i] && !parasiteDecayKill)
                 {
                     for (int p = 0; p < 3; p++)
@@ -4277,16 +4521,20 @@ namespace gamething
                 health = 0;
                 if (isNetHost)
                 {
-                    // Host dying ends the match for everyone
+                    // Mark host as dead — game continues if client is alive
                     hostDead = true;
-                    HandleMultiplayerGameOver();
+                    if (p2Dead)
+                    {
+                        netManager?.SendGameOver();
+                        HandleMultiplayerGameOver();
+                    }
                 }
                 else
                 {
-                    // Client dying — mark dead, game continues if host is alive
+                    // Mark client as dead — game continues if host is alive
                     hostDead = true; // "hostDead" on client = "I am dead"
                     if (p2Dead)
-                        HandleMultiplayerGameOver(); // both dead
+                        HandleMultiplayerGameOver();
                 }
                 return;
             }
@@ -5772,10 +6020,30 @@ namespace gamething
 
                 HostDead = hostDead,
                 ClientDead = p2Dead,
+
+                Reloading = reloading,
+                ReloadProgress = reloadTime > 0 ? reloadTimer / reloadTime : 0f,
+
+                FlameWall = flameWall,
+                OrbitCount = orbitCount,
+                OrbitAngle = orbitAngle,
+                OrbitRadiusBonus = orbitRadiusBonus,
+                PlayerSize = playerSize,
             };
 
             try
             {
+                // Pack turret positions
+                int tCount = Math.Min(turrets.Count, 10);
+                pkt.TurretCount = tCount;
+                pkt.TurretX = new float[tCount];
+                pkt.TurretY = new float[tCount];
+                for (int i = 0; i < tCount; i++)
+                {
+                    pkt.TurretX[i] = turrets[i].x / nw;
+                    pkt.TurretY[i] = turrets[i].y / nh;
+                }
+
                 // Pack wall data (normalized)
                 if (wallActive)
                 {
@@ -5908,6 +6176,28 @@ namespace gamething
                 wallTimer = state.WallTimer;
                 boxWall = state.BoxWall;
 
+                // Sync reload state
+                reloading = state.Reloading;
+                reloadTimer = state.ReloadProgress * reloadTime;
+
+                // Sync upgrade visuals
+                flameWall = state.FlameWall;
+                orbitCount = state.OrbitCount;
+                orbitAngle = state.OrbitAngle;
+                orbitRadiusBonus = state.OrbitRadiusBonus;
+                playerSize = (int)state.PlayerSize;
+                boxSize = playerSize; // keep boxSize in sync
+
+                // Sync turret positions for rendering
+                turrets.Clear();
+                turretShootTimers.Clear();
+                for (int i = 0; i < state.TurretCount; i++)
+                {
+                    turrets.Add((state.TurretX[i] * sw, state.TurretY[i] * sh));
+                    turretShootTimers.Add(0f);
+                }
+                if (state.TurretCount > 0) turret = true;
+
                 // Sync walls (scale from normalized)
                 if (state.WallActive && state.WallCount > 0)
                 {
@@ -5992,13 +6282,6 @@ namespace gamething
                 for (int i = 0; i < state.EnemyBulletCount; i++)
                     newEB.Add((state.EnemyBulletX[i] * sw, state.EnemyBulletY[i] * sh, 0, 0));
                 enemyBullets = newEB;
-
-                // Handle death states — host dying ends the match
-                if (state.HostDead)
-                {
-                    // Host died — game over for everyone
-                    HandleMultiplayerGameOver();
-                }
             }
             catch { /* state packet race condition, skip frame */ }
         }
@@ -6017,6 +6300,8 @@ namespace gamething
 
             // Host simulates P2 movement
             float p2Speed = speed;
+            float toughLoveBonus2 = toughLove ? 1f + (1f - (p2Health / p2MaxHealth)) * 1.5f : 1f;
+            p2Speed *= toughLoveBonus2;
             float p2PrevX = p2X;
             float p2PrevY = p2Y;
             if (input.MoveX != 0 || input.MoveY != 0)
@@ -6076,8 +6361,9 @@ namespace gamething
             p2X = Math.Max(0, Math.Min(p2X, ClientSize.Width - boxSize));
             p2Y = Math.Max(0, Math.Min(p2Y, ClientSize.Height - boxSize));
 
-            // P2 shooting — create bullets aimed at their mouse position
-            if (input.Shooting && shootCooldown <= 0)
+            // P2 shooting — independent cooldown so P2 fires independently of host
+            if (p2ShootCooldown > 0) p2ShootCooldown -= deltaTime;
+            if (input.Shooting && p2ShootCooldown <= 0 && (ammo > 0 || superActive))
             {
                 float cx = p2X + boxSize / 2f;
                 float cy = p2Y + boxSize / 2f;
@@ -6088,7 +6374,28 @@ namespace gamething
                 {
                     float vx = dirX / dist * bulletSpeed;
                     float vy = dirY / dist * bulletSpeed;
+                    if (doubleTap)
+                    {
+                        p2DoubleTapCounter++;
+                        if (p2DoubleTapCounter >= 5)
+                        {
+                            p2DoubleTapCounter = 0;
+                            float spread = 0.3f;
+                            bullets.Add((cx, cy, vx, vy, 0));
+                            bullets.Add((cx, cy,
+                                vx * (float)Math.Cos(spread) - vy * (float)Math.Sin(spread),
+                                vx * (float)Math.Sin(spread) + vy * (float)Math.Cos(spread), 0));
+                            bullets.Add((cx, cy,
+                                vx * (float)Math.Cos(-spread) - vy * (float)Math.Sin(-spread),
+                                vx * (float)Math.Sin(-spread) + vy * (float)Math.Cos(-spread), 0));
+                            p2ShootCooldown = superActive ? 0f : Math.Max(0.05f, shootRate - fireRateBonus);
+                            if (!superActive) { ammo--; if (ammo <= 0) reloading = true; }
+                            return;
+                        }
+                    }
                     bullets.Add((cx + dirX / dist * 20, cy + dirY / dist * 20, vx, vy, 0));
+                    p2ShootCooldown = superActive ? 0f : Math.Max(0.05f, shootRate - fireRateBonus);
+                    if (!superActive) { ammo--; if (ammo <= 0) reloading = true; }
                 }
             }
 
@@ -6142,6 +6449,61 @@ namespace gamething
                 }
             }
 
+            // P2 blink (right-click teleport)
+            if (input.ActivateBlink)
+            {
+                latestP2Input.ActivateBlink = false;
+                if (blink && p2BlinkCooldown <= 0)
+                {
+                    float blinkX = input.BlinkAimX * ClientSize.Width;
+                    float blinkY = input.BlinkAimY * ClientSize.Height;
+                    p2X = Math.Max(0, Math.Min(blinkX - boxSize / 2, ClientSize.Width - boxSize));
+                    p2Y = Math.Max(0, Math.Min(blinkY - boxSize / 2, ClientSize.Height - boxSize));
+                    p2BlinkCooldown = blinkCooldownTime;
+                }
+            }
+
+            // P2 turret placement
+            if (input.PlaceTurret)
+            {
+                latestP2Input.PlaceTurret = false;
+                if (turret && p2TurretCooldown <= 0)
+                {
+                    float tX = input.TurretAimX * ClientSize.Width;
+                    float tY = input.TurretAimY * ClientSize.Height;
+                    turrets.Add((tX, tY));
+                    turretShootTimers.Add(0f);
+                    p2TurretCooldown = turretCooldownTime;
+                }
+            }
+
+            // P2 decoy placement (shared cooldown)
+            if (input.ActivateDecoy)
+            {
+                latestP2Input.ActivateDecoy = false;
+                if (decoy && !decoyActive && decoyCooldown <= 0)
+                {
+                    decoyActive = true;
+                    decoyTimer = decoyDuration;
+                    decoyCooldown = decoyCooldownTime;
+                    decoyX = input.DecoyAimX * ClientSize.Width;
+                    decoyY = input.DecoyAimY * ClientSize.Height;
+                }
+            }
+
+            // P2 speed trap placement (shared cooldown)
+            if (input.ActivateSpeedTrap)
+            {
+                latestP2Input.ActivateSpeedTrap = false;
+                if (speedTrap && !speedTrapActive && speedTrapCooldown <= 0)
+                {
+                    speedTrapActive = true;
+                    speedTrapTimer = speedTrapDuration;
+                    speedTrapX = input.SpeedTrapAimX * ClientSize.Width;
+                    speedTrapY = input.SpeedTrapAimY * ClientSize.Height;
+                }
+            }
+
             // P2 upgrade purchases (shared money)
             if (input.UpgradePurchaseIndex >= 0)
             {
@@ -6168,7 +6530,10 @@ namespace gamething
             switch (index)
             {
                 case 0: wallLength += boxSize; wallDuration += 5; break;
-                case 1: maxHealth += 10; health = Math.Min(health + 10, maxHealth); break;
+                case 1:
+                    maxHealth += 10; health = Math.Min(health + 10, maxHealth);
+                    if (isMultiplayer) { p2MaxHealth += 10; p2Health = Math.Min(p2Health + 10, p2MaxHealth); }
+                    break;
                 case 2: if (scoreTimerMax > 0.05) scoreTimerMax -= 0.05f; else score += 470; break;
                 case 3: bulletSpeed++; break;
                 case 4: scorePerSecond++; break;
@@ -6218,6 +6583,8 @@ namespace gamething
         private void InitMultiplayerCallbacks()
         {
             if (netManager == null) return;
+            // Clear any leftover lobby/ready-up handlers so we don't get duplicates
+            netManager.ClearAllCallbacks();
             netManager.OnPlayerInputReceived += input =>
             {
                 // Latch one-shot triggers from previous packets so they survive until
@@ -6227,6 +6594,10 @@ namespace gamething
                 bool latchedSuper = latestP2Input.ActivateSuper || input.ActivateSuper;
                 bool latchedWall = latestP2Input.ActivateWall || input.ActivateWall;
                 bool latchedDash = latestP2Input.Dashing || input.Dashing;
+                bool latchedBlink = latestP2Input.ActivateBlink || input.ActivateBlink;
+                bool latchedTurret = latestP2Input.PlaceTurret || input.PlaceTurret;
+                bool latchedDecoy = latestP2Input.ActivateDecoy || input.ActivateDecoy;
+                bool latchedSpeedTrap = latestP2Input.ActivateSpeedTrap || input.ActivateSpeedTrap;
                 int latchedUpgrade = input.UpgradePurchaseIndex >= 0
                     ? input.UpgradePurchaseIndex
                     : latestP2Input.UpgradePurchaseIndex;
@@ -6234,6 +6605,10 @@ namespace gamething
                 latestP2Input.ActivateSuper = latchedSuper;
                 latestP2Input.ActivateWall = latchedWall;
                 latestP2Input.Dashing = latchedDash;
+                latestP2Input.ActivateBlink = latchedBlink;
+                latestP2Input.PlaceTurret = latchedTurret;
+                latestP2Input.ActivateDecoy = latchedDecoy;
+                latestP2Input.ActivateSpeedTrap = latchedSpeedTrap;
                 latestP2Input.UpgradePurchaseIndex = latchedUpgrade;
             };
             netManager.OnGameStateReceived += state => latestGameState = state;
@@ -6242,9 +6617,19 @@ namespace gamething
                 this.Invoke(() =>
                 {
                     isMultiplayer = false;
-                    // Could show a message or return to menu
                 });
             };
+            // Client receives explicit GameOver from host
+            if (!isNetHost)
+            {
+                netManager.OnGameOver += () =>
+                {
+                    this.Invoke(() =>
+                    {
+                        HandleMultiplayerGameOver();
+                    });
+                };
+            }
         }
 
         private void ShowMultiplayerMenu()
@@ -6265,7 +6650,7 @@ namespace gamething
 
             // Painted centered panel backdrop
             int panelW = (int)(420 * scale);
-            int panelH = (int)(500 * scale);
+            int panelH = (int)(600 * scale);
             int panelX = (ClientSize.Width - panelW) / 2;
             int panelY = (ClientSize.Height - panelH) / 2;
 
@@ -6318,6 +6703,17 @@ namespace gamething
             statusLabel.TextAlign = ContentAlignment.MiddleCenter;
             statusLabel.BackColor = Color.Transparent;
             mpPanel.Controls.Add(statusLabel);
+
+            Label pingLabel = new Label();
+            pingLabel.Text = "";
+            pingLabel.Font = new Font("Arial", (int)(9 * scale));
+            pingLabel.ForeColor = Color.FromArgb(130, 130, 150);
+            pingLabel.Size = new Size(innerW, (int)(18 * scale));
+            pingLabel.Location = new Point(pad, yOff + (int)(22 * scale));
+            pingLabel.TextAlign = ContentAlignment.MiddleCenter;
+            pingLabel.BackColor = Color.Transparent;
+            pingLabel.Visible = false;
+            mpPanel.Controls.Add(pingLabel);
             yOff += (int)(30 * scale);
 
             // --- HOST section ---
@@ -6440,6 +6836,75 @@ namespace gamething
             mpPanel.Controls.Add(lanBtn);
             yOff += (int)(36 * scale);
 
+            // --- Difficulty selector (for host) ---
+            int selectedDifficulty = 0;
+            var diffNames = new[] { "⭐ Easy", "⭐⭐ Normal", "⭐⭐⭐ Hard", "💀 Nightmare" };
+            var diffColors = new[]
+            {
+                Color.FromArgb(40, 120, 40),
+                Color.FromArgb(40, 80, 140),
+                Color.FromArgb(140, 80, 40),
+                Color.FromArgb(120, 20, 20)
+            };
+            var diffLocked = new[]
+            {
+                false,
+                !difficultyUnlocked_Normal,
+                !difficultyUnlocked_Hard,
+                !difficultyUnlocked_Nightmare
+            };
+
+            Label diffLabel = new Label();
+            diffLabel.Text = "Difficulty:";
+            diffLabel.Font = new Font("Arial", (int)(9 * scale));
+            diffLabel.ForeColor = Color.FromArgb(180, 180, 200);
+            diffLabel.Size = new Size(innerW, (int)(18 * scale));
+            diffLabel.Location = new Point(pad, yOff);
+            diffLabel.TextAlign = ContentAlignment.MiddleLeft;
+            diffLabel.BackColor = Color.Transparent;
+            diffLabel.Visible = false;
+            mpPanel.Controls.Add(diffLabel);
+            yOff += (int)(20 * scale);
+
+            int diffBtnW = (innerW - (int)(6 * scale)) / 2;
+            int diffBtnH = (int)(28 * scale);
+            List<Button> diffButtons = new List<Button>();
+            int diffStartY = yOff;
+            for (int d = 0; d < 4; d++)
+            {
+                int captured = d;
+                int col = d % 2;
+                int row = d / 2;
+                Button diffBtn = new Button();
+                diffBtn.Text = diffLocked[d] ? "🔒 " + diffNames[d].Split(' ')[1] : diffNames[d];
+                diffBtn.Size = new Size(diffBtnW, diffBtnH);
+                diffBtn.Location = new Point(pad + col * (diffBtnW + (int)(6 * scale)), diffStartY + row * (diffBtnH + (int)(4 * scale)));
+                diffBtn.BackColor = (d == 0 && !diffLocked[d]) ? Color.FromArgb(Math.Min(255, diffColors[d].R + 30), Math.Min(255, diffColors[d].G + 30), Math.Min(255, diffColors[d].B + 30)) : (diffLocked[d] ? Color.FromArgb(40, 40, 40) : diffColors[d]);
+                diffBtn.ForeColor = diffLocked[d] ? Color.Gray : Color.White;
+                diffBtn.FlatStyle = FlatStyle.Flat;
+                diffBtn.FlatAppearance.BorderColor = (d == 0 && !diffLocked[d]) ? Color.Gold : (diffLocked[d] ? Color.FromArgb(60, 60, 60) : Color.FromArgb(Math.Min(255, diffColors[d].R + 30), Math.Min(255, diffColors[d].G + 30), Math.Min(255, diffColors[d].B + 30)));
+                diffBtn.Font = new Font("Arial", Math.Max(1, (int)(9 * scale)), FontStyle.Bold);
+                diffBtn.Cursor = diffLocked[d] ? Cursors.Default : Cursors.Hand;
+                diffBtn.Enabled = !diffLocked[d];
+                diffBtn.Visible = false;
+                diffBtn.Click += (s2, e2) =>
+                {
+                    selectedDifficulty = captured;
+                    for (int i = 0; i < diffButtons.Count; i++)
+                    {
+                        if (diffLocked[i]) continue;
+                        bool sel = (i == captured);
+                        diffButtons[i].BackColor = sel
+                            ? Color.FromArgb(Math.Min(255, diffColors[i].R + 30), Math.Min(255, diffColors[i].G + 30), Math.Min(255, diffColors[i].B + 30))
+                            : diffColors[i];
+                        diffButtons[i].FlatAppearance.BorderColor = sel ? Color.Gold : Color.FromArgb(Math.Min(255, diffColors[i].R + 30), Math.Min(255, diffColors[i].G + 30), Math.Min(255, diffColors[i].B + 30));
+                    }
+                };
+                diffButtons.Add(diffBtn);
+                mpPanel.Controls.Add(diffBtn);
+            }
+            yOff = diffStartY + 2 * (diffBtnH + (int)(4 * scale)) + (int)(8 * scale);
+
             Button readyBtn = new Button();
             readyBtn.Text = "Ready";
             readyBtn.Size = new Size(innerW, (int)(44 * scale));
@@ -6521,7 +6986,7 @@ namespace gamething
                 this.Controls.Remove(menuMultiplayerBtn);
                 onMainMenu = false;
                 isPaused = false;
-                difficulty = 0;
+                difficulty = selectedDifficulty;
                 sandboxMode = false;
                 ApplyDifficulty();
                 ResetGame();
@@ -6600,6 +7065,9 @@ namespace gamething
                         roomCodeLabel.Text = $"Code: {netManager.RoomCode}";
                         statusLabel.Text = "Waiting for player to join...";
                         statusLabel.ForeColor = Color.LimeGreen;
+                        // Show difficulty selector for host
+                        diffLabel.Visible = true;
+                        foreach (var db in diffButtons) db.Visible = true;
                     });
                 };
                 netManager.OnPeerJoined += () =>
@@ -6616,7 +7084,7 @@ namespace gamething
                 {
                     this.Invoke(() =>
                     {
-                        statusLabel.Text = $"{netManager.PeerName} is ready! Start when you are.";
+                        statusLabel.Text = $"{netManager.PeerName} is ready! Pick difficulty & start.";
                         statusLabel.ForeColor = Color.LimeGreen;
                         startBtn.Visible = true;
                     });
@@ -6654,6 +7122,15 @@ namespace gamething
                     }
 
                     netManager.PollEvents();
+
+                    // Update ping display
+                    if (connected && netManager.PingMs >= 0)
+                    {
+                        pingLabel.Visible = true;
+                        int ping = netManager.PingMs;
+                        pingLabel.Text = $"Ping: {ping}ms";
+                        pingLabel.ForeColor = ping < 80 ? Color.LimeGreen : ping < 150 ? Color.Gold : Color.Red;
+                    }
 
                     if (!connected && netManager.IsConnected)
                     {
@@ -6734,6 +7211,15 @@ namespace gamething
                     if (netManager == null) { joinPollTimer.Stop(); return; }
                     joinAttempts++;
                     netManager.PollEvents();
+
+                    // Update ping display
+                    if (joinConnected && netManager.PingMs >= 0)
+                    {
+                        pingLabel.Visible = true;
+                        int ping = netManager.PingMs;
+                        pingLabel.Text = $"Ping: {ping}ms";
+                        pingLabel.ForeColor = ping < 80 ? Color.LimeGreen : ping < 150 ? Color.Gold : Color.Red;
+                    }
 
                     if (!joinConnected && netManager.IsConnected)
                     {

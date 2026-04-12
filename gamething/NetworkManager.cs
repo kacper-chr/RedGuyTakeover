@@ -15,6 +15,7 @@ public class NetworkManager
     private NetDataWriter _writer = new();
 
     public bool IsConnected => _serverPeer != null && _serverPeer.ConnectionState == ConnectionState.Connected;
+    public int PingMs => _serverPeer?.Ping ?? -1;
     public bool IsHost { get; private set; }
     public bool IsInRoom { get; private set; }
     public bool PeerReady { get; private set; }
@@ -32,7 +33,23 @@ public class NetworkManager
     public event Action? OnRoomCreated;
     public event Action? OnRoomJoined;
     public event Action? OnPlayerReady;
+    public event Action? OnGameOver;
     public event Action<string>? OnError;
+
+    /// <summary>Removes all game/lobby event handlers so the next phase starts clean.</summary>
+    public void ClearAllCallbacks()
+    {
+        OnGameStateReceived = null;
+        OnPlayerInputReceived = null;
+        OnGameStartReceived = null;
+        OnPeerJoined = null;
+        OnPeerLeft = null;
+        OnRoomCreated = null;
+        OnRoomJoined = null;
+        OnPlayerReady = null;
+        OnGameOver = null;
+        OnError = null;
+    }
 
     public NetworkManager()
     {
@@ -138,6 +155,14 @@ public class NetworkManager
         _serverPeer!.Send(_writer, DeliveryMethod.ReliableOrdered);
     }
 
+    public void SendGameOver()
+    {
+        if (!IsConnected || !IsInRoom) return;
+        _writer.Reset();
+        _writer.Put((byte)PacketType.GameOver);
+        _serverPeer!.Send(_writer, DeliveryMethod.ReliableOrdered);
+    }
+
     public void SendReady()
     {
         if (!IsConnected || !IsInRoom) return;
@@ -193,7 +218,7 @@ public class NetworkManager
                 var pkt = new PeerJoinedPacket();
                 pkt.Deserialize(reader);
                 PeerName = pkt.PlayerName;
-                PeerReady = true;
+                PeerReady = false;
                 StatusMessage = $"{PeerName} joined!";
                 OnPeerJoined?.Invoke();
                 break;
@@ -232,7 +257,14 @@ public class NetworkManager
 
             case PacketType.PlayerReady:
             {
+                PeerReady = true;
                 OnPlayerReady?.Invoke();
+                break;
+            }
+
+            case PacketType.GameOver:
+            {
+                OnGameOver?.Invoke();
                 break;
             }
         }

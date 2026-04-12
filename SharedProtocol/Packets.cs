@@ -108,6 +108,18 @@ public struct PlayerInputPacket : INetSerializable
     public float WallAimX;
     public float WallAimY;
     public int UpgradePurchaseIndex; // -1 = none, 0+ = upgrade index
+    public bool ActivateBlink;
+    public float BlinkAimX;
+    public float BlinkAimY;
+    public bool PlaceTurret;
+    public float TurretAimX;
+    public float TurretAimY;
+    public bool ActivateDecoy;
+    public float DecoyAimX;
+    public float DecoyAimY;
+    public bool ActivateSpeedTrap;
+    public float SpeedTrapAimX;
+    public float SpeedTrapAimY;
 
     public void Serialize(NetDataWriter writer)
     {
@@ -122,6 +134,18 @@ public struct PlayerInputPacket : INetSerializable
         writer.Put(WallAimX);
         writer.Put(WallAimY);
         writer.Put(UpgradePurchaseIndex);
+        writer.Put(ActivateBlink);
+        writer.Put(BlinkAimX);
+        writer.Put(BlinkAimY);
+        writer.Put(PlaceTurret);
+        writer.Put(TurretAimX);
+        writer.Put(TurretAimY);
+        writer.Put(ActivateDecoy);
+        writer.Put(DecoyAimX);
+        writer.Put(DecoyAimY);
+        writer.Put(ActivateSpeedTrap);
+        writer.Put(SpeedTrapAimX);
+        writer.Put(SpeedTrapAimY);
     }
 
     public void Deserialize(NetDataReader reader)
@@ -137,6 +161,18 @@ public struct PlayerInputPacket : INetSerializable
         WallAimX = reader.GetFloat();
         WallAimY = reader.GetFloat();
         UpgradePurchaseIndex = reader.GetInt();
+        ActivateBlink = reader.GetBool();
+        BlinkAimX = reader.GetFloat();
+        BlinkAimY = reader.GetFloat();
+        PlaceTurret = reader.GetBool();
+        TurretAimX = reader.GetFloat();
+        TurretAimY = reader.GetFloat();
+        ActivateDecoy = reader.GetBool();
+        DecoyAimX = reader.GetFloat();
+        DecoyAimY = reader.GetFloat();
+        ActivateSpeedTrap = reader.GetBool();
+        SpeedTrapAimX = reader.GetFloat();
+        SpeedTrapAimY = reader.GetFloat();
     }
 }
 
@@ -208,6 +244,22 @@ public struct GameStatePacket : INetSerializable
     public bool HostDead;
     public bool ClientDead;
 
+    // Reload state
+    public bool Reloading;
+    public float ReloadProgress; // 0-1
+
+    // Shared upgrade visuals (synced so client can render correctly)
+    public bool FlameWall;
+    public int OrbitCount;
+    public float OrbitAngle;
+    public float OrbitRadiusBonus;
+    public float PlayerSize;
+
+    // Turret positions for client rendering
+    public int TurretCount;
+    public float[] TurretX;
+    public float[] TurretY;
+
     public void Serialize(NetDataWriter writer)
     {
         writer.Put(HostX); writer.Put(HostY);
@@ -275,6 +327,21 @@ public struct GameStatePacket : INetSerializable
 
         writer.Put(HostDead);
         writer.Put(ClientDead);
+
+        writer.Put(Reloading);
+        writer.Put(ReloadProgress);
+
+        writer.Put(FlameWall);
+        writer.Put(OrbitCount);
+        writer.Put(OrbitAngle);
+        writer.Put(OrbitRadiusBonus);
+        writer.Put(PlayerSize);
+
+        writer.Put((byte)TurretCount);
+        for (int i = 0; i < TurretCount; i++)
+        {
+            writer.Put(TurretX[i]); writer.Put(TurretY[i]);
+        }
     }
 
     public void Deserialize(NetDataReader reader)
@@ -360,6 +427,23 @@ public struct GameStatePacket : INetSerializable
 
         HostDead = reader.GetBool();
         ClientDead = reader.GetBool();
+
+        Reloading = reader.GetBool();
+        ReloadProgress = reader.GetFloat();
+
+        FlameWall = reader.GetBool();
+        OrbitCount = reader.GetInt();
+        OrbitAngle = reader.GetFloat();
+        OrbitRadiusBonus = reader.GetFloat();
+        PlayerSize = reader.GetFloat();
+
+        TurretCount = reader.GetByte();
+        TurretX = new float[TurretCount];
+        TurretY = new float[TurretCount];
+        for (int i = 0; i < TurretCount; i++)
+        {
+            TurretX[i] = reader.GetFloat(); TurretY[i] = reader.GetFloat();
+        }
     }
 
     private static ushort NormToUShort(float v)
