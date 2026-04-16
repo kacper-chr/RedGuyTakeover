@@ -360,15 +360,21 @@ namespace gamething
         private List<bool> enemyIsVisible = new List<bool>();
         private List<(float x, float y, float timer)> corruptedTrails = new List<(float x, float y, float timer)>();
 
-        private float effectChance_Normal = 0.05f;
-        private float effectChance_Hard = 0.10f;
-        private float effectChance_Nightmare = 0.15f;
         // --- Difficulty ---
-        private int difficulty = 0; // 0=Easy, 1=Normal, 2=Hard, 3=Nightmare
+        // 0=Easy,1=Beginner,2=Normal,3=Moderate,4=Challenging,5=Hard,6=Expert,7=Extreme,8=Nightmare
+        private int difficulty = 0;
         private int highestUnlockedDifficulty = 0;
-        private bool difficultyUnlocked_Normal = false;
-        private bool difficultyUnlocked_Hard = false;
-        private bool difficultyUnlocked_Nightmare = false;
+        private static readonly string[] DifficultyNames = { "Easy", "Beginner", "Normal", "Moderate", "Challenging", "Hard", "Expert", "Extreme", "Nightmare" };
+        private static readonly string[] DifficultyStarNames = { "⭐ Easy", "⭐ Beginner", "⭐⭐ Normal", "⭐⭐ Moderate", "⭐⭐ Challenging", "⭐⭐⭐ Hard", "⭐⭐⭐ Expert", "💀 Extreme", "💀 Nightmare" };
+        private static readonly Color[] DifficultyColors = {
+            Color.LimeGreen, Color.MediumSeaGreen, Color.DodgerBlue, Color.CornflowerBlue,
+            Color.Goldenrod, Color.Orange, Color.OrangeRed, Color.Crimson, Color.Red
+        };
+        private static readonly Color[] DifficultyBgColors = {
+            Color.FromArgb(40, 120, 40), Color.FromArgb(30, 100, 60), Color.FromArgb(40, 80, 140),
+            Color.FromArgb(50, 70, 120), Color.FromArgb(120, 100, 20), Color.FromArgb(140, 80, 40),
+            Color.FromArgb(140, 50, 30), Color.FromArgb(120, 20, 40), Color.FromArgb(120, 20, 20)
+        };
         private float bossSpawnInterval_Current = 120f;
         private float scoreMultiplier = 1f;
 
@@ -421,6 +427,10 @@ namespace gamething
         private float p2HitCooldown = 0f;
         private float p2BlinkCooldown = 0f;
         private float p2TurretCooldown = 0f;
+        private int p2Ammo = 60;
+        private int p2MaxAmmo = 60;
+        private bool p2Reloading = false;
+        private float p2ReloadTimer = 0f;
         private Color p2Color_synced = Color.FromArgb(255, 80, 140, 255); // default blue for P2
         private bool hostDead = false;
         private int p2PendingUpgrade = -1; // client sends upgrade purchase to host
@@ -438,7 +448,12 @@ namespace gamething
         // Host-side: latest input from client
         private PlayerInputPacket latestP2Input = new();
 
-        // --- Achievements ---
+        // --- Achievements & Red Coin Shop ---
+        private int redCoins = 0;
+        private int permSpeedLevel = 0;
+        private int permDamageLevel = 0;
+        private int permBulletSpeedLevel = 0;
+        private Button? menuShopBtn = null;
         private HashSet<string> unlockedAchievements = new HashSet<string>();
         private string achievementToastText = "";
         private string achievementToastIcon = "";
@@ -493,10 +508,15 @@ namespace gamething
             ("homing_user",    "🎯",  "Lock On",           "Unlock homing bullets",              "Abilities",g => g.homing),
 
             // Difficulty achievements
-            ("normal_unlock",  "⭐",  "Stepping Up",       "Unlock Normal difficulty and achievements",           "Difficulty",g => g.difficultyUnlocked_Normal),
-            ("hard_unlock",    "⭐",  "Getting Serious",   "Unlock Hard difficulty",             "Difficulty",g => g.difficultyUnlocked_Hard),
-            ("nightmare_unlock","💀", "Nightmare Fuel",    "Unlock Nightmare difficulty",        "Difficulty",g => g.difficultyUnlocked_Nightmare),
-            ("nightmare_boss", "🔥",  "True Champion",     "Defeat a boss on Nightmare",         "Difficulty",g => g.difficulty == 3 && g.bossesDefeatedOnDifficulty >= 1),
+            ("beginner_unlock",  "⭐",  "Baby Steps",        "Unlock Beginner difficulty",          "Difficulty",g => g.highestUnlockedDifficulty >= 1),
+            ("normal_unlock",    "⭐",  "Stepping Up",       "Unlock Normal difficulty",            "Difficulty",g => g.highestUnlockedDifficulty >= 2),
+            ("moderate_unlock",  "⭐",  "Warming Up",        "Unlock Moderate difficulty",          "Difficulty",g => g.highestUnlockedDifficulty >= 3),
+            ("challenging_unlock","⭐⭐","Rising Threat",    "Unlock Challenging difficulty",       "Difficulty",g => g.highestUnlockedDifficulty >= 4),
+            ("hard_unlock",      "⭐⭐","Getting Serious",  "Unlock Hard difficulty",              "Difficulty",g => g.highestUnlockedDifficulty >= 5),
+            ("expert_unlock",    "⭐⭐⭐","Proven Warrior",  "Unlock Expert difficulty",            "Difficulty",g => g.highestUnlockedDifficulty >= 6),
+            ("extreme_unlock",   "💀",  "No Turning Back",   "Unlock Extreme difficulty",           "Difficulty",g => g.highestUnlockedDifficulty >= 7),
+            ("nightmare_unlock", "💀",  "Nightmare Fuel",    "Unlock Nightmare difficulty",         "Difficulty",g => g.highestUnlockedDifficulty >= 8),
+            ("nightmare_boss",   "🔥",  "True Champion",     "Defeat a boss on Nightmare",          "Difficulty",g => g.difficulty == 8 && g.bossesDefeatedOnDifficulty >= 1),
 
             // Misc achievements
             ("full_health",    "💚",  "Full Health",       "Reach max HP above 100",             "Misc",     g => g.maxHealth >= 100 && g.health >= g.maxHealth),
@@ -508,17 +528,48 @@ namespace gamething
             ("super_active",   "⚡",  "Super Saiyan",      "Activate Super mode",                "Misc",     g => g.superActive),
         };
 
+        private static int GetAchievementRedCoins(string id)
+        {
+            return id switch
+            {
+                // Kill achievements: 1, 2, 5, 10, 20
+                "first_blood" => 1, "serial_killer" => 2, "mass_murderer" => 5, "genocide" => 10, "exterminator" => 20,
+                // Survival: 1, 3, 5, 10, 20
+                "survivor" => 1, "endurance" => 3, "marathon" => 5, "immortal" => 10, "eternal" => 20,
+                // Boss: 2, 5, 10, 20
+                "boss_slayer" => 2, "boss_hunter" => 5, "boss_master" => 10, "boss_legend" => 20,
+                // Score: 1, 2, 5, 10, 25
+                "pocket_change" => 1, "wealthy" => 2, "rich" => 5, "millionaire" => 10, "bezos" => 25,
+                // Upgrades: 1, 3, 5
+                "first_upgrade" => 1, "shopaholic" => 3, "maxed_out" => 5,
+                // Abilities: 2 each, turret/piercing/homing 3
+                "orbit_unlocked" => 2, "orbit_master" => 5, "blink_user" => 2, "ghost" => 3,
+                "turret_placer" => 3, "piercing_user" => 3, "homing_user" => 3,
+                // Difficulty: escalating 1-25
+                "beginner_unlock" => 1, "normal_unlock" => 2, "moderate_unlock" => 3,
+                "challenging_unlock" => 5, "hard_unlock" => 8, "expert_unlock" => 12,
+                "extreme_unlock" => 18, "nightmare_unlock" => 25, "nightmare_boss" => 50,
+                // Misc: 2-5
+                "full_health" => 2, "close_call" => 5, "bullet_hell" => 3,
+                "coin_collector" => 2, "coin_hoarder" => 5, "parasite_immune" => 3, "super_active" => 2,
+                _ => 1
+            };
+        }
+
         private void UnlockAchievement(string id)
         {
             if (sandboxMode) return; // Don't grant achievements in sandbox
             if (difficulty < 1) return; // Only unlock on Normal (1) or higher
             if (unlockedAchievements.Contains(id)) return;
             unlockedAchievements.Add(id);
+            int reward = GetAchievementRedCoins(id);
+            redCoins += reward;
             SaveAchievements();
+            SaveRedCoins();
             var ach = achievements.FirstOrDefault(a => a.id == id);
             if (ach.id != null)
             {
-                achievementToastText = ach.name;
+                achievementToastText = $"{ach.name} (+{reward} 🔴)";
                 achievementToastIcon = ach.icon;
                 achievementToastTimer = achievementToastDuration;
             }
@@ -562,6 +613,7 @@ namespace gamething
                 LoadRunHistory();
                 LoadBeastiary();
                 LoadAchievements();
+                LoadRedCoins();
                 LoadPlayerName();
             };
             enemyRespawnTimers = new List<float>(new float[enemies.Count]);
@@ -1009,6 +1061,16 @@ namespace gamething
                     reloadTimer = 0f;
                 }
             }
+            if (p2Reloading)
+            {
+                p2ReloadTimer += deltaTime;
+                if (p2ReloadTimer >= reloadTime)
+                {
+                    p2Ammo = p2MaxAmmo;
+                    p2Reloading = false;
+                    p2ReloadTimer = 0f;
+                }
+            }
             if (speedTrapActive)
             {
                 speedTrapTimer -= deltaTime;
@@ -1258,7 +1320,7 @@ namespace gamething
                                 coins.Add((p2X + playerSize / 2, p2Y + playerSize / 2, 0f, 0f));
                         }
                         if (rapidReload)
-                            ammo = Math.Min(ammo + 5, maxAmmo);
+                            p2Ammo = Math.Min(p2Ammo + 5, p2MaxAmmo);
                         if (thorns)
                             DamageEnemy(i, 1f);
                         if (p2Health <= 0)
@@ -1842,7 +1904,7 @@ namespace gamething
                             coins.Add((p2X + playerSize / 2, p2Y + playerSize / 2, 0f, 0f));
                     }
                     if (rapidReload)
-                        ammo = Math.Min(ammo + 5, maxAmmo);
+                        p2Ammo = Math.Min(p2Ammo + 5, p2MaxAmmo);
                     if (thorns) { /* no enemy to damage from bullet */ }
                     p2HitCooldown = hitCooldownTime;
                     if (p2Health <= 0)
@@ -2253,6 +2315,20 @@ namespace gamething
                     new RectangleF(55 * scaleX, 220 * scaleY, 800 * scaleX, 30 * scaleY),
                     new StringFormat { Alignment = StringAlignment.Near });
 
+                // Red coins display (top-right)
+                string rcText = $"🔴 {redCoins}";
+                using var rcFont = new Font("Segoe UI Emoji", 16 * scaleY, FontStyle.Bold);
+                var rcSize2 = e.Graphics.MeasureString(rcText, rcFont);
+                float rcX2 = ClientSize.Width - rcSize2.Width - 20 * scaleX;
+                float rcY2 = 20 * scaleY;
+                e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(160, 15, 15, 25)),
+                    rcX2 - 10 * scaleX, rcY2 - 4 * scaleY, rcSize2.Width + 20 * scaleX, rcSize2.Height + 8 * scaleY);
+                e.Graphics.DrawRectangle(new Pen(Color.FromArgb(120, 200, 50, 50), 2),
+                    rcX2 - 10 * scaleX, rcY2 - 4 * scaleY, rcSize2.Width + 20 * scaleX, rcSize2.Height + 8 * scaleY);
+                e.Graphics.DrawString(rcText, rcFont,
+                    new SolidBrush(Color.FromArgb(255, 220, 60, 60)),
+                    rcX2, rcY2);
+
                 // Controls bottom
                 e.Graphics.DrawString("WASD: Move  |  LMB: Shoot  |  Space: Dash  |  Tab: Upgrades  |  ESC: Pause  |  MMB: Inspect",
                     new Font("Arial", 11 * scaleY),
@@ -2396,23 +2472,20 @@ namespace gamething
                 }
                 if (!onPreferences && !showDimOverlay)
                 {
-                    var dLabels = new[] { "⭐ Easy", "⭐⭐ Normal", "⭐⭐⭐ Hard", "💀 Nightmare" };
-                    var dColors = new[] { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
-                    var dLocked = new[] { false, !difficultyUnlocked_Normal, !difficultyUnlocked_Hard, !difficultyUnlocked_Nightmare };
-
-                    for (int d = 0; d < 4; d++)
+                    for (int d = 0; d < 9; d++)
                     {
-                        Color c = dLocked[d] ? Color.FromArgb(60, 60, 60) : dColors[d];
-                        e.Graphics.DrawString(dLocked[d] ? "🔒 Locked" : "✓ Unlocked",
-                            new Font("Arial", 9 * scaleY),
-                            new SolidBrush(c),
-                            ClientSize.Width * 0.6f,
-                            ClientSize.Height / 2 - 80 + d * 60);
-                        e.Graphics.DrawString(dLabels[d],
-                            new Font("Arial", 12 * scaleY, FontStyle.Bold),
-                            new SolidBrush(c),
-                            ClientSize.Width * 0.6f,
-                            ClientSize.Height / 2 - 60 + d * 60);
+                        bool locked = d > highestUnlockedDifficulty;
+                        Color c = locked ? Color.FromArgb(60, 60, 60) : DifficultyColors[d];
+                        int col = d % 3;
+                        int row = d / 3;
+                        float dx = ClientSize.Width * 0.6f + col * 120;
+                        float dy = ClientSize.Height / 2 - 80 + row * 45;
+                        e.Graphics.DrawString(locked ? "🔒" : "✓",
+                            new Font("Arial", 8 * scaleY),
+                            new SolidBrush(c), dx, dy);
+                        e.Graphics.DrawString(DifficultyNames[d],
+                            new Font("Arial", 9 * scaleY, FontStyle.Bold),
+                            new SolidBrush(c), dx, dy + 14 * scaleY);
                     }
                 }
                 if (showingUnlockAnimation)
@@ -2434,10 +2507,8 @@ namespace gamething
                     e.Graphics.FillRectangle(
                         new SolidBrush(Color.FromArgb(panelAlpha, 15, 15, 25)),
                         panelX, panelY, panelW, panelH);
-                    string[] diffBorderColors = { "EASY", "NORMAL", "HARD", "NIGHTMARE" };
-                    Color[] panelBorderColors = { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
-                    Color panelBorder = unlockedDifficultyIndex >= 0 && unlockedDifficultyIndex < 4
-                        ? panelBorderColors[unlockedDifficultyIndex] : Color.White;
+                    Color panelBorder = unlockedDifficultyIndex >= 0 && unlockedDifficultyIndex < 9
+                        ? DifficultyColors[unlockedDifficultyIndex] : Color.White;
                     e.Graphics.DrawRectangle(
                         new Pen(Color.FromArgb(panelAlpha, panelBorder), 3),
                         panelX, panelY, panelW, panelH);
@@ -2460,8 +2531,8 @@ namespace gamething
                     {
                         string[] diffNames = { "EASY", "NORMAL", "HARD", "NIGHTMARE" };
                         Color[] diffColors = { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
-                        Color ringColor = unlockedDifficultyIndex >= 0 && unlockedDifficultyIndex < 4
-                            ? diffColors[unlockedDifficultyIndex] : Color.White;
+                        Color ringColor = unlockedDifficultyIndex >= 0 && unlockedDifficultyIndex < 9
+                            ? DifficultyColors[unlockedDifficultyIndex] : Color.White;
                         e.Graphics.DrawEllipse(
                             new Pen(Color.FromArgb(ringAlpha, ringColor), 4),
                             ClientSize.Width / 2f - ringRadius,
@@ -2470,12 +2541,10 @@ namespace gamething
                     }
 
                     // Main text
-                    string[] names = { "EASY", "NORMAL", "HARD", "NIGHTMARE" };
-                    Color[] colors = { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
-                    string unlockedName = unlockedDifficultyIndex >= 0 && unlockedDifficultyIndex < 4
-                        ? names[unlockedDifficultyIndex] : "";
-                    Color unlockedColor = unlockedDifficultyIndex >= 0 && unlockedDifficultyIndex < 4
-                        ? colors[unlockedDifficultyIndex] : Color.White;
+                    string unlockedName = unlockedDifficultyIndex >= 0 && unlockedDifficultyIndex < 9
+                        ? DifficultyNames[unlockedDifficultyIndex].ToUpper() : "";
+                    Color unlockedColor = unlockedDifficultyIndex >= 0 && unlockedDifficultyIndex < 9
+                        ? DifficultyColors[unlockedDifficultyIndex] : Color.White;
 
                     int textAlpha = (int)(Math.Min(1f, overlayAlpha) * 255);
 
@@ -2494,9 +2563,14 @@ namespace gamething
                     // What changed
                     string[] changes = unlockedDifficultyIndex switch
                     {
-                        1 => new[] { "Enemy Speed: 1x", "Boss Timer: 120s", "Score Multiplier: 1x", "Parasitic Enemies Spawn" },
-                        2 => new[] { "Enemy Speed: 1.2x", "Enemy Damage: 1.5x", "Boss Timer: 90s", "Score Multiplier: 2x", "Parasitic Chance: 5x" },
-                        3 => new[] { "Enemy Speed: +1.4x", "Enemy Damage: 2x", "Boss Timer: 60s", "Parasite Chance: 10x", "Score Multiplier: 2x" },
+                        1 => new[] { "Speed +17%", "Damage +20%", "Boss Timer: 165s" },
+                        2 => new[] { "Speed +67%", "Damage: 1.0", "Boss Timer: 120s", "Parasitic Enemies Spawn" },
+                        3 => new[] { "Speed +6%", "Damage +10%", "Boss Timer: 110s", "Parasitic: 2%" },
+                        4 => new[] { "Speed +6%", "Damage: 1.3", "Boss Timer: 100s", "Parasitic: 3%" },
+                        5 => new[] { "Speed +7%", "Damage: 1.5", "Boss Timer: 90s", "Score: 2x", "Parasitic: 5%" },
+                        6 => new[] { "Speed +5%", "Damage: 1.7", "Boss Timer: 80s", "Parasitic: 7%" },
+                        7 => new[] { "Speed +6%", "Damage: 1.85", "Boss Timer: 70s", "Parasitic: 8.5%" },
+                        8 => new[] { "Speed +4%", "Damage: 2.0", "Boss Timer: 60s", "Parasitic: 10%" },
                         _ => Array.Empty<string>()
                     };
 
@@ -2651,12 +2725,12 @@ namespace gamething
                     e.Graphics.FillRectangle(Brushes.DodgerBlue, hbX, hbY, hbW * p2HpFill, 4 * scale);
                 }
                 // Reload circle above P2
-                if (reloading && !p2Dead)
+                if (p2Reloading && !p2Dead)
                 {
                     float rcSize = 10 * scale;
                     float rcX = p2X + playerSize / 2 - rcSize / 2;
                     float rcY = p2Y - rcSize - 4 * scale;
-                    float progress = reloadTime > 0 ? reloadTimer / reloadTime : 0f;
+                    float progress = reloadTime > 0 ? p2ReloadTimer / reloadTime : 0f;
                     int sweepAngle = (int)(360 * progress);
                     using var rcPen = new Pen(Color.FromArgb(200, 255, 215, 0), 2.5f * scale);
                     e.Graphics.DrawArc(rcPen, rcX, rcY, rcSize, rcSize, -90, sweepAngle);
@@ -3201,16 +3275,10 @@ namespace gamething
                     new SolidBrush(Color.FromArgb(a, darkMode ? Color.White : Color.Black)),
                     ClientSize.Width / 2 - 200, ClientSize.Height / 2 - 60);
             }
-            string[] diffLabels = { "EASY", "NORMAL", "HARD", "NIGHTMARE" };
-            Color[] diffLabelColors = {
-    Color.LimeGreen,
-    Color.DodgerBlue,
-    Color.Orange,
-    Color.Red
-};
-            e.Graphics.DrawString(diffLabels[difficulty],
+            int dc = Math.Clamp(difficulty, 0, 8);
+            e.Graphics.DrawString(DifficultyNames[dc].ToUpper(),
                 new Font("Arial", 10 * scaleY, FontStyle.Bold),
-                new SolidBrush(diffLabelColors[difficulty]),
+                new SolidBrush(DifficultyColors[dc]),
                 22 * scaleX, (int)(105 * scaleY));
 
             if (lastStand && (health <= 15f || (isMultiplayer && p2Health <= 15f)))
@@ -3378,7 +3446,7 @@ namespace gamething
             bullets.Clear();
             score = 0;
             coins = new List<(float x, float y, float velX, float velY)>();
-            scoreTimer = 0f; shootCooldown = 0f; gameStartTimer = 0f; bulletSpeed = 15f * scale;
+            scoreTimer = 0f; shootCooldown = 0f; gameStartTimer = 0f; bulletSpeed = (15f + permBulletSpeedLevel * 0.5f) * scale;
             superActive = false; superTimer = 0f; superCooldown = 0f; superCooldownTime = 90f;
             mouseHeld = false; wallActive = false; wallTimer = 0f; wallCooldown = 0f;
             maxAmmo = 60; ammo = maxAmmo; reloading = false; reloadTimer = 0f;
@@ -3391,7 +3459,7 @@ namespace gamething
             bossBulletSpeed = 40f * scale;
             afterburn = false; isAfterburn = false; afterburnTimer = 0f;
             blink = false; blinkCooldown = 0f; jackpot = false;
-            speed = 4.8f * scale; playerSize = (int)(30 * scale);
+            speed = (4.8f + permSpeedLevel * 0.2f) * scale; playerSize = (int)(30 * scale);
             piercingBullets = false; dashTrail.Clear(); scoreTimerMax = 1f;
             enemyBuffTimer = 0f;
             boxSize = (int)(30 * scale); enemyReinforceChance = 0f;
@@ -3412,6 +3480,7 @@ namespace gamething
             p2BlinkCooldown = 0f; p2TurretCooldown = 0f;
             p2PendingBlink = false; p2PendingTurret = false;
             p2PendingDecoy = false; p2PendingSpeedTrap = false;
+            p2Ammo = 60; p2MaxAmmo = 60; p2Reloading = false; p2ReloadTimer = 0f;
             runnerEnemyChance = 0.05f;
             medic = false; doubleTap = false; doubleTapCounter = 0;
             explosiveFinish = false; nextBulletIsLast = false;
@@ -4329,6 +4398,7 @@ namespace gamething
         {
             if (i < 0 || i >= enemies.Count || i >= enemyHealth.Count || i >= enemyAlive.Count) return;
             if (!enemyAlive[i]) return;
+            damage += permDamageLevel * 0.2f;
 
             // Armor check
             if (i < enemyIsArmored.Count && enemyIsArmored[i] && !enemyArmorBroken[i])
@@ -4505,17 +4575,16 @@ namespace gamething
             bossShootTimer = 0f;
             if (!sandboxMode)
             {
-                // Only fire the unlock animation the FIRST time the next tier is reached.
-                if (difficulty == 0 && !difficultyUnlocked_Normal)
-                { difficultyUnlocked_Normal = true; pendingUnlockAnimation = 1; }
-                else if (difficulty == 1 && !difficultyUnlocked_Hard)
-                { difficultyUnlocked_Hard = true; pendingUnlockAnimation = 2; }
-                else if (difficulty == 2 && !difficultyUnlocked_Nightmare)
-                { difficultyUnlocked_Nightmare = true; pendingUnlockAnimation = 3; }
+                // Defeating a boss unlocks the next difficulty
+                int nextDiff = difficulty + 1;
+                if (nextDiff <= 8 && nextDiff > highestUnlockedDifficulty)
+                {
+                    highestUnlockedDifficulty = nextDiff;
+                    pendingUnlockAnimation = nextDiff;
+                }
             }
             SaveDifficultyUnlocks();
-            if (difficulty > highestUnlockedDifficulty)
-                highestUnlockedDifficulty = difficulty;
+            if (difficulty > highestUnlockedDifficulty) highestUnlockedDifficulty = difficulty;
             for (int r = 0; r < enemyRespawnTimers.Count; r++)
             {
                 if (enemyRespawnTimers[r] > 0)
@@ -4819,41 +4888,28 @@ namespace gamething
                 menuQuitBtn.Visible = false;
                 menuPrefsBtn.Visible = false;
 
-                var diffNames = new[] { "⭐ Easy", "⭐⭐ Normal", "⭐⭐⭐ Hard", "💀 Nightmare" };
-                var diffColors = new[]
-                {
-        Color.FromArgb(40, 120, 40),
-        Color.FromArgb(40, 80, 140),
-        Color.FromArgb(140, 80, 40),
-        Color.FromArgb(120, 20, 20)
-    };
-                var diffLocked = new[]
-                {
-        false,
-        !difficultyUnlocked_Normal,
-        !difficultyUnlocked_Hard,
-        !difficultyUnlocked_Nightmare
-    };
-
                 List<Button> diffButtons = new List<Button>();
                 Button backBtn2 = new Button();
-                for (int d = 0; d < 4; d++)
+                for (int d = 0; d < 9; d++)
                 {
                     int captured = d;
+                    bool locked = d > highestUnlockedDifficulty;
                     Button diffBtn = new Button();
-                    diffBtn.Text = diffLocked[d] ? "🔒 " + diffNames[d].Split(' ')[1] : diffNames[d];
-                    diffBtn.Size = new Size(250, 50);
-                    diffBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 80 + d * 60);
-                    diffBtn.BackColor = diffLocked[d] ? Color.FromArgb(40, 40, 40) : diffColors[d];
-                    diffBtn.ForeColor = diffLocked[d] ? Color.Gray : Color.White;
+                    diffBtn.Text = locked ? "🔒 " + DifficultyNames[d] : DifficultyStarNames[d];
+                    diffBtn.Size = new Size(170, 42);
+                    int col = d % 3;
+                    int row = d / 3;
+                    diffBtn.Location = new Point((int)(40 * scaleX) + col * 180, ClientSize.Height / 2 - 80 + row * 52);
+                    diffBtn.BackColor = locked ? Color.FromArgb(40, 40, 40) : DifficultyBgColors[d];
+                    diffBtn.ForeColor = locked ? Color.Gray : Color.White;
                     diffBtn.FlatStyle = FlatStyle.Flat;
-                    diffBtn.FlatAppearance.BorderColor = diffLocked[d] ? Color.FromArgb(60, 60, 60) : Color.FromArgb(
-                        Math.Min(255, diffColors[d].R + 30),
-                        Math.Min(255, diffColors[d].G + 30),
-                        Math.Min(255, diffColors[d].B + 30));
-                    diffBtn.Font = new Font("Arial", 14, FontStyle.Bold);
-                    diffBtn.Cursor = diffLocked[d] ? Cursors.Default : Cursors.Hand;
-                    diffBtn.Enabled = !diffLocked[d];
+                    diffBtn.FlatAppearance.BorderColor = locked ? Color.FromArgb(60, 60, 60) : Color.FromArgb(
+                        Math.Min(255, DifficultyBgColors[d].R + 30),
+                        Math.Min(255, DifficultyBgColors[d].G + 30),
+                        Math.Min(255, DifficultyBgColors[d].B + 30));
+                    diffBtn.Font = new Font("Arial", 11, FontStyle.Bold);
+                    diffBtn.Cursor = locked ? Cursors.Default : Cursors.Hand;
+                    diffBtn.Enabled = !locked;
 
                     diffBtn.Click += (s2, e2) =>
                     {
@@ -4913,6 +4969,7 @@ namespace gamething
                             this.Controls.Remove(menuHistoryBtn);
                             this.Controls.Remove(menuBestiaryBtn);
                             this.Controls.Remove(menuAchievementsBtn);
+                            this.Controls.Remove(menuShopBtn);
                             this.Controls.Remove(menuMultiplayerBtn);
                             isPaused = false;
                             ApplyDifficulty();
@@ -4932,6 +4989,7 @@ namespace gamething
                             this.Controls.Remove(menuHistoryBtn);
                             this.Controls.Remove(menuBestiaryBtn);
                             this.Controls.Remove(menuAchievementsBtn);
+                            this.Controls.Remove(menuShopBtn);
                             this.Controls.Remove(menuMultiplayerBtn);
                             isPaused = false;
                             ApplyDifficulty();
@@ -4963,7 +5021,7 @@ namespace gamething
 
                 backBtn2.Text = "◀ Back";
                 backBtn2.Size = new Size(250, 35);
-                backBtn2.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 170);
+                backBtn2.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 80 + 3 * 52 + 10);
                 backBtn2.BackColor = Color.FromArgb(60, 60, 60);
                 backBtn2.ForeColor = Color.White;
                 backBtn2.FlatStyle = FlatStyle.Flat;
@@ -5211,10 +5269,26 @@ namespace gamething
             this.Controls.Add(menuAchievementsBtn);
             menuAchievementsBtn.BringToFront();
 
+            menuShopBtn = new Button();
+            menuShopBtn.Text = "🔴 Red Coin Shop";
+            menuShopBtn.Size = new Size(250, 45);
+            menuShopBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 395);
+            menuShopBtn.BackColor = Color.FromArgb(80, 30, 30);
+            menuShopBtn.ForeColor = Color.White;
+            menuShopBtn.FlatStyle = FlatStyle.Flat;
+            menuShopBtn.FlatAppearance.BorderColor = Color.FromArgb(120, 50, 50);
+            menuShopBtn.Font = new Font("Arial", 13, FontStyle.Bold);
+            menuShopBtn.Cursor = Cursors.Hand;
+            menuShopBtn.MouseEnter += (s, e) => menuShopBtn.BackColor = Color.FromArgb(100, 40, 40);
+            menuShopBtn.MouseLeave += (s, e) => menuShopBtn.BackColor = Color.FromArgb(80, 30, 30);
+            menuShopBtn.Click += (s, e) => ShowRedCoinShop();
+            this.Controls.Add(menuShopBtn);
+            menuShopBtn.BringToFront();
+
             menuMultiplayerBtn = new Button();
             menuMultiplayerBtn.Text = "🌐 Multiplayer";
             menuMultiplayerBtn.Size = new Size(250, 45);
-            menuMultiplayerBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 395);
+            menuMultiplayerBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 450);
             menuMultiplayerBtn.BackColor = Color.FromArgb(40, 80, 120);
             menuMultiplayerBtn.ForeColor = Color.White;
             menuMultiplayerBtn.FlatStyle = FlatStyle.Flat;
@@ -5233,45 +5307,23 @@ namespace gamething
         }
         private void ApplyDifficulty()
         {
-            switch (difficulty)
-            {
-                case 0: // Easy
-                    currentEnemySpeed = 3f * scale;
-                    enemyDamage = 0.5f;
-                    bossSpawnInterval_Current = 180f;
-                    currentBossMaxHealth = 150f;
-                    currentBossShootRate = 2.5f;
-                    scoreMultiplier = 3f;
-                    parasiticEnemyChance = 0f;
-                    break;
-                case 1: // Normal
-                    currentEnemySpeed = 5f * scale;
-                    enemyDamage = 1f;
-                    bossSpawnInterval_Current = 120f;
-                    scoreMultiplier = 1f;
-                    currentBossMaxHealth = 300f;
-                    currentBossShootRate = 2f;
-                    parasiticEnemyChance = 0.01f;
-                    break;
-                case 2: // Hard
-                    currentEnemySpeed = 6f * scale;
-                    enemyDamage = 1.5f;
-                    bossSpawnInterval_Current = 90f;
-                    scoreMultiplier = 2f;
-                    currentBossMaxHealth = 400f;
-                    currentBossShootRate = 1.8f;
-                    parasiticEnemyChance = 0.05f;
-                    break;
-                case 3: // Nightmare
-                    currentEnemySpeed = 7f * scale;
-                    enemyDamage = 2f;
-                    bossSpawnInterval_Current = 60f;
-                    scoreMultiplier = 2f;
-                    currentBossMaxHealth = 500f;
-                    currentBossShootRate = 1.5f;
-                    parasiticEnemyChance = 0.1f;
-                    break;
-            }
+            // Gradual progression across 9 difficulty levels
+            float[] speeds =     { 3.0f, 3.5f, 5.0f, 5.3f, 5.6f, 6.0f, 6.3f, 6.7f, 7.0f };
+            float[] damages =    { 0.5f, 0.6f, 1.0f, 1.1f, 1.3f, 1.5f, 1.7f, 1.85f, 2.0f };
+            float[] bossTimers = { 180f, 165f, 120f, 110f, 100f, 90f,  80f,  70f,  60f };
+            float[] bossHps =    { 150f, 180f, 300f, 325f, 350f, 400f, 430f, 465f, 500f };
+            float[] bossRates =  { 2.5f, 2.4f, 2.0f, 1.95f, 1.9f, 1.8f, 1.7f, 1.6f, 1.5f };
+            float[] scoreMults = { 3.0f, 2.5f, 1.0f, 1.2f, 1.5f, 2.0f, 2.0f, 2.0f, 2.0f };
+            float[] parasitic =  { 0f,   0f,   0.01f, 0.02f, 0.03f, 0.05f, 0.07f, 0.085f, 0.1f };
+
+            int d = Math.Clamp(difficulty, 0, 8);
+            currentEnemySpeed = speeds[d] * scale;
+            enemyDamage = damages[d];
+            bossSpawnInterval_Current = bossTimers[d];
+            currentBossMaxHealth = bossHps[d];
+            currentBossShootRate = bossRates[d];
+            scoreMultiplier = scoreMults[d];
+            parasiticEnemyChance = parasitic[d];
         }
         private static string GetSaveDir()
         {
@@ -5289,11 +5341,8 @@ namespace gamething
 
         private void SaveDifficultyUnlocks()
         {
-            string saveData = "";
-            if (difficultyUnlocked_Normal) saveData += "CRIMSON ";
-            if (difficultyUnlocked_Hard) saveData += "PHANTOM ";
-            if (difficultyUnlocked_Nightmare) saveData += "OBLIVION ";
-            File.WriteAllText(GetSavePath(), saveData.Trim());
+            string saveData = $"LEVEL:{highestUnlockedDifficulty}";
+            File.WriteAllText(GetSavePath(), saveData);
         }
 
         private void LoadDifficultyUnlocks()
@@ -5301,9 +5350,21 @@ namespace gamething
             string path = GetSavePath();
             if (!File.Exists(path)) return;
             string saveData = File.ReadAllText(path);
-            difficultyUnlocked_Normal = saveData.Contains("CRIMSON");
-            difficultyUnlocked_Hard = saveData.Contains("PHANTOM");
-            difficultyUnlocked_Nightmare = saveData.Contains("OBLIVION");
+            // Try new format first
+            var match = System.Text.RegularExpressions.Regex.Match(saveData, @"LEVEL:(\d+)");
+            if (match.Success)
+            {
+                highestUnlockedDifficulty = Math.Clamp(int.Parse(match.Groups[1].Value), 0, 8);
+            }
+            else
+            {
+                // Legacy format: map old 4-level keywords conservatively
+                // so old players still have new difficulties to earn
+                if (saveData.Contains("OBLIVION")) highestUnlockedDifficulty = 5;      // had Nightmare → unlock up to Hard
+                else if (saveData.Contains("PHANTOM")) highestUnlockedDifficulty = 3;   // had Hard → unlock up to Moderate
+                else if (saveData.Contains("CRIMSON")) highestUnlockedDifficulty = 1;   // had Normal → unlock up to Beginner
+                else highestUnlockedDifficulty = 0;
+            }
         }
 
         private void SavePlayerName()
@@ -5407,13 +5468,9 @@ namespace gamething
             {
                 float angle = (float)(rng.NextDouble() * Math.PI * 2);
                 float speed = (float)(rng.NextDouble() * 400 + 100);
-                Color[] colors = unlockedDifficultyIndex switch
-                {
-                    1 => new[] { Color.DodgerBlue, Color.Cyan, Color.White },
-                    2 => new[] { Color.Orange, Color.OrangeRed, Color.Yellow },
-                    3 => new[] { Color.Red, Color.DarkRed, Color.Crimson },
-                    _ => new[] { Color.White, Color.LightGray, Color.Silver }
-                };
+                Color dc = unlockedDifficultyIndex >= 0 && unlockedDifficultyIndex < 9
+                    ? DifficultyColors[unlockedDifficultyIndex] : Color.White;
+                Color[] colors = new[] { dc, Color.FromArgb(Math.Min(255, dc.R + 60), Math.Min(255, dc.G + 60), Math.Min(255, dc.B + 60)), Color.White };
                 unlockParticles.Add((
                     ClientSize.Width / 2f,
                     ClientSize.Height / 2f,
@@ -5459,9 +5516,9 @@ namespace gamething
         private bool RollEffect(int minDifficulty)
         {
             if (difficulty < minDifficulty) return false;
-            float chance = difficulty == 1 ? effectChance_Normal :
-                           difficulty == 2 ? effectChance_Hard :
-                           difficulty == 3 ? effectChance_Nightmare : 0f;
+            // Gradual effect chances: 0%,0%,5%,6%,8%,10%,12%,13%,15%
+            float[] effectChances = { 0f, 0f, 0.05f, 0.06f, 0.08f, 0.10f, 0.12f, 0.13f, 0.15f };
+            float chance = effectChances[Math.Clamp(difficulty, 0, 8)];
             return rng.NextDouble() < chance;
         }
         private void InitEnemyEffects(int i)
@@ -5487,15 +5544,15 @@ namespace gamething
             while (enemyPhasingTimer.Count <= i) enemyPhasingTimer.Add(0f);
             while (enemyIsVisible.Count <= i) enemyIsVisible.Add(true);
 
-            enemyIsFrenzied[i] = RollEffect(1);
-            enemyIsZigzag[i] = !enemyIsFrenzied[i] && RollEffect(2);
-            enemyIsCharging[i] = !enemyIsFrenzied[i] && !enemyIsZigzag[i] && RollEffect(1);
-            enemyIsArmored[i] = RollEffect(2);
-            enemyIsRegenerating[i] = RollEffect(2);
-            enemyIsReflective[i] = RollEffect(3);
-            enemyIsBerserker[i] = RollEffect(1);
-            enemyIsPhasing[i] = RollEffect(3);
-            enemyIsCorrupted[i] = RollEffect(3);
+            enemyIsFrenzied[i] = RollEffect(2);
+            enemyIsZigzag[i] = !enemyIsFrenzied[i] && RollEffect(4);
+            enemyIsCharging[i] = !enemyIsFrenzied[i] && !enemyIsZigzag[i] && RollEffect(3);
+            enemyIsArmored[i] = RollEffect(4);
+            enemyIsRegenerating[i] = RollEffect(5);
+            enemyIsReflective[i] = RollEffect(6);
+            enemyIsBerserker[i] = RollEffect(2);
+            enemyIsPhasing[i] = RollEffect(6);
+            enemyIsCorrupted[i] = RollEffect(7);
             enemyArmorBroken[i] = false;
             enemyChargeCooldown[i] = 3f;
             enemyChargeTimer[i] = 0f;
@@ -5593,6 +5650,142 @@ namespace gamething
             catch { }
         }
 
+        private void SaveRedCoins()
+        {
+            try
+            {
+                File.WriteAllText(Path.Combine(GetSaveDir(), "redcoins.dat"),
+                    $"{redCoins}|{permSpeedLevel}|{permDamageLevel}|{permBulletSpeedLevel}");
+            }
+            catch { }
+        }
+
+        private void LoadRedCoins()
+        {
+            try
+            {
+                string path = Path.Combine(GetSaveDir(), "redcoins.dat");
+                if (!File.Exists(path)) return;
+                string data = File.ReadAllText(path).Trim();
+                var parts = data.Split('|');
+                if (parts.Length >= 1 && int.TryParse(parts[0], out int val)) redCoins = val;
+                if (parts.Length >= 2 && int.TryParse(parts[1], out int sp)) permSpeedLevel = sp;
+                if (parts.Length >= 3 && int.TryParse(parts[2], out int dm)) permDamageLevel = dm;
+                if (parts.Length >= 4 && int.TryParse(parts[3], out int bs)) permBulletSpeedLevel = bs;
+            }
+            catch { }
+        }
+
+        private int GetUpgradeCost(int basePrice, int level)
+        {
+            // Price increases by 50% each level (rounded up)
+            int cost = basePrice;
+            for (int i = 0; i < level; i++)
+                cost = (int)Math.Ceiling(cost * 1.5);
+            return cost;
+        }
+
+        private void ShowRedCoinShop()
+        {
+            var shopPanel = CreatePaintedOverlay(450, 380);
+            shopPanel.BackColor = Color.FromArgb(20, 20, 30);
+            float s = scale;
+
+            Label title = new Label();
+            title.Text = $"🔴 RED COIN SHOP — {redCoins} coins";
+            title.Font = new Font("Arial", Math.Max(1, (int)(15 * s)), FontStyle.Bold);
+            title.ForeColor = Color.FromArgb(220, 60, 60);
+            title.TextAlign = ContentAlignment.MiddleCenter;
+            title.Size = new Size(shopPanel.Width - (int)(20 * s), (int)(35 * s));
+            title.Location = new Point((int)(10 * s), (int)(10 * s));
+            shopPanel.Controls.Add(title);
+
+            int yPos = (int)(55 * s);
+            int btnW = shopPanel.Width - (int)(40 * s);
+            int btnH = (int)(60 * s);
+
+            // Speed upgrade
+            int speedCost = GetUpgradeCost(5, permSpeedLevel);
+            Button speedBtn = new Button();
+            speedBtn.Text = $"🏃 Speed +0.2  (Lv {permSpeedLevel})  —  🔴 {speedCost}";
+            speedBtn.Size = new Size(btnW, btnH);
+            speedBtn.Location = new Point((int)(20 * s), yPos);
+            speedBtn.BackColor = redCoins >= speedCost ? Color.FromArgb(40, 80, 40) : Color.FromArgb(40, 40, 40);
+            speedBtn.ForeColor = redCoins >= speedCost ? Color.White : Color.Gray;
+            speedBtn.FlatStyle = FlatStyle.Flat;
+            speedBtn.FlatAppearance.BorderColor = redCoins >= speedCost ? Color.FromArgb(60, 120, 60) : Color.FromArgb(60, 60, 60);
+            speedBtn.Font = new Font("Arial", Math.Max(1, (int)(11 * s)), FontStyle.Bold);
+            speedBtn.Cursor = redCoins >= speedCost ? Cursors.Hand : Cursors.Default;
+            speedBtn.Enabled = redCoins >= speedCost;
+            shopPanel.Controls.Add(speedBtn);
+            yPos += btnH + (int)(10 * s);
+
+            // Damage upgrade
+            int dmgCost = GetUpgradeCost(5, permDamageLevel);
+            Button dmgBtn = new Button();
+            dmgBtn.Text = $"⚔ Damage +0.1  (Lv {permDamageLevel})  —  🔴 {dmgCost}";
+            dmgBtn.Size = new Size(btnW, btnH);
+            dmgBtn.Location = new Point((int)(20 * s), yPos);
+            dmgBtn.BackColor = redCoins >= dmgCost ? Color.FromArgb(80, 40, 40) : Color.FromArgb(40, 40, 40);
+            dmgBtn.ForeColor = redCoins >= dmgCost ? Color.White : Color.Gray;
+            dmgBtn.FlatStyle = FlatStyle.Flat;
+            dmgBtn.FlatAppearance.BorderColor = redCoins >= dmgCost ? Color.FromArgb(120, 60, 60) : Color.FromArgb(60, 60, 60);
+            dmgBtn.Font = new Font("Arial", Math.Max(1, (int)(11 * s)), FontStyle.Bold);
+            dmgBtn.Cursor = redCoins >= dmgCost ? Cursors.Hand : Cursors.Default;
+            dmgBtn.Enabled = redCoins >= dmgCost;
+            shopPanel.Controls.Add(dmgBtn);
+            yPos += btnH + (int)(10 * s);
+
+            // Bullet speed upgrade
+            int bsCost = GetUpgradeCost(3, permBulletSpeedLevel);
+            Button bsBtn = new Button();
+            bsBtn.Text = $"💨 Bullet Speed +0.5  (Lv {permBulletSpeedLevel})  —  🔴 {bsCost}";
+            bsBtn.Size = new Size(btnW, btnH);
+            bsBtn.Location = new Point((int)(20 * s), yPos);
+            bsBtn.BackColor = redCoins >= bsCost ? Color.FromArgb(40, 60, 100) : Color.FromArgb(40, 40, 40);
+            bsBtn.ForeColor = redCoins >= bsCost ? Color.White : Color.Gray;
+            bsBtn.FlatStyle = FlatStyle.Flat;
+            bsBtn.FlatAppearance.BorderColor = redCoins >= bsCost ? Color.FromArgb(60, 90, 140) : Color.FromArgb(60, 60, 60);
+            bsBtn.Font = new Font("Arial", Math.Max(1, (int)(11 * s)), FontStyle.Bold);
+            bsBtn.Cursor = redCoins >= bsCost ? Cursors.Hand : Cursors.Default;
+            bsBtn.Enabled = redCoins >= bsCost;
+            shopPanel.Controls.Add(bsBtn);
+            yPos += btnH + (int)(15 * s);
+
+            // Close button
+            Button closeBtn = new Button();
+            closeBtn.Text = "Close";
+            closeBtn.Size = new Size((int)(120 * s), (int)(35 * s));
+            closeBtn.Location = new Point((shopPanel.Width - (int)(120 * s)) / 2, yPos);
+            closeBtn.BackColor = Color.FromArgb(80, 30, 30);
+            closeBtn.ForeColor = Color.White;
+            closeBtn.FlatStyle = FlatStyle.Flat;
+            closeBtn.Font = new Font("Arial", Math.Max(1, (int)(11 * s)), FontStyle.Bold);
+            closeBtn.Cursor = Cursors.Hand;
+            closeBtn.Click += (s2, e2) => this.Controls.Remove(shopPanel);
+            shopPanel.Controls.Add(closeBtn);
+
+            // Buy handlers - rebuild shop on purchase
+            speedBtn.Click += (s2, e2) =>
+            {
+                int cost = GetUpgradeCost(5, permSpeedLevel);
+                if (redCoins >= cost) { redCoins -= cost; permSpeedLevel++; SaveRedCoins(); this.Controls.Remove(shopPanel); ShowRedCoinShop(); }
+            };
+            dmgBtn.Click += (s2, e2) =>
+            {
+                int cost = GetUpgradeCost(5, permDamageLevel);
+                if (redCoins >= cost) { redCoins -= cost; permDamageLevel++; SaveRedCoins(); this.Controls.Remove(shopPanel); ShowRedCoinShop(); }
+            };
+            bsBtn.Click += (s2, e2) =>
+            {
+                int cost = GetUpgradeCost(3, permBulletSpeedLevel);
+                if (redCoins >= cost) { redCoins -= cost; permBulletSpeedLevel++; SaveRedCoins(); this.Controls.Remove(shopPanel); ShowRedCoinShop(); }
+            };
+
+            this.Controls.Add(shopPanel);
+            shopPanel.BringToFront();
+        }
+
         private Panel CreatePaintedOverlay(int baseW, int baseH)
         {
             int w = Math.Min(ClientSize.Width - 20, (int)(baseW * scale));
@@ -5647,9 +5840,6 @@ namespace gamething
             title.Location = new Point((int)(20 * s), (int)(15 * s));
             histForm.Controls.Add(title);
 
-            string[] diffNames = { "Tutorial", "Normal", "Hard", "Nightmare" };
-            Color[] diffColors = { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
-
             if (runHistory.Count == 0)
             {
                 Label noRuns = new Label();
@@ -5670,7 +5860,7 @@ namespace gamething
                     var run = runHistory[i];
                     int minutes = (int)(run.time / 60f);
                     int seconds = (int)(run.time % 60f);
-                    int diff = Math.Max(0, Math.Min(3, run.difficulty));
+                    int diff = Math.Clamp(run.difficulty, 0, 8);
 
                     Panel row = new Panel();
                     row.Size = new Size((int)(650 * s), rowH);
@@ -5688,9 +5878,9 @@ namespace gamething
                     row.Controls.Add(runNum);
 
                     Label diffLabel = new Label();
-                    diffLabel.Text = (run.sandbox ? "🧪 " : "") + (run.multiplayer ? "👥 " : "") + diffNames[diff];
+                    diffLabel.Text = (run.sandbox ? "🧪 " : "") + (run.multiplayer ? "👥 " : "") + DifficultyNames[diff];
                     diffLabel.Font = new Font("Arial", Math.Max(1, (int)(12 * s)), FontStyle.Bold);
-                    diffLabel.ForeColor = run.sandbox ? Color.MediumPurple : diffColors[diff];
+                    diffLabel.ForeColor = run.sandbox ? Color.MediumPurple : DifficultyColors[diff];
                     diffLabel.Size = new Size((int)(120 * s), rowH);
                     diffLabel.Location = new Point((int)(55 * s), 0);
                     diffLabel.TextAlign = ContentAlignment.MiddleLeft;
@@ -5759,20 +5949,17 @@ namespace gamething
         new { Name = "Gunner",      Icon = "🟧", Color = Color.OrangeRed,   MinDiff = 0, Desc = "Shoots bullets at the player.",                                              Effect = "" },
         new { Name = "Tank",        Icon = "🟫", Color = Color.DarkRed,     MinDiff = 0, Desc = "High HP. Deals 3x damage on contact.",                                       Effect = "" },
         new { Name = "Runner",      Icon = "🩷", Color = Color.HotPink,     MinDiff = 0, Desc = "Low HP. Moves 2.5x faster than normal.",                                     Effect = "" },
-        new { Name = "Parasitic",   Icon = "🟣", Color = Color.MediumPurple,MinDiff = 1, Desc = "Decays over time. Releases 3 parasites when killed by player.",              Effect = "Spawns parasites" },
-        new { Name = "Frenzied",    Icon = "🟠", Color = Color.Orange,      MinDiff = 1, Desc = "Moves erratically. Partially homes toward player.",                           Effect = "Erratic movement" },
-        new { Name = "Charging",    Icon = "🟡", Color = Color.Yellow,      MinDiff = 1, Desc = "Periodically dashes at high speed toward the player.",                       Effect = "Dash attack" },
-        new { Name = "Berserker",   Icon = "🔴", Color = Color.OrangeRed,   MinDiff = 1, Desc = "Below 50% HP: moves faster, deals 2x damage, takes less damage.",            Effect = "Enrages at 50% HP" },
-        new { Name = "Armored",     Icon = "⬜", Color = Color.Silver,      MinDiff = 2, Desc = "First hit is always blocked by armor.",                                       Effect = "Blocks first hit" },
-        new { Name = "Regenerating",Icon = "🟩", Color = Color.LimeGreen,   MinDiff = 2, Desc = "Slowly heals over time.",                                                    Effect = "Heals over time" },
-        new { Name = "Zigzag",      Icon = "🔵", Color = Color.Cyan,        MinDiff = 2, Desc = "Moves in a zigzag pattern toward player.",                                   Effect = "Zigzag movement" },
-        new { Name = "Phasing",     Icon = "👻", Color = Color.LightBlue,   MinDiff = 3, Desc = "Periodically becomes nearly invisible and untouchable.",                     Effect = "Becomes invisible" },
-        new { Name = "Reflective",  Icon = "💠", Color = Color.LightCyan,   MinDiff = 3, Desc = "20% chance to reflect bullets back at the player.",                          Effect = "Reflects bullets" },
-        new { Name = "Corrupted",   Icon = "🟪", Color = Color.MediumPurple,MinDiff = 3, Desc = "Leaves a damaging purple trail behind it.",                                  Effect = "Leaves damage trail" },
+        new { Name = "Parasitic",   Icon = "🟣", Color = Color.MediumPurple,MinDiff = 2, Desc = "Decays over time. Releases 3 parasites when killed by player.",              Effect = "Spawns parasites" },
+        new { Name = "Frenzied",    Icon = "🟠", Color = Color.Orange,      MinDiff = 2, Desc = "Moves erratically. Partially homes toward player.",                           Effect = "Erratic movement" },
+        new { Name = "Charging",    Icon = "🟡", Color = Color.Yellow,      MinDiff = 3, Desc = "Periodically dashes at high speed toward the player.",                       Effect = "Dash attack" },
+        new { Name = "Berserker",   Icon = "🔴", Color = Color.OrangeRed,   MinDiff = 2, Desc = "Below 50% HP: moves faster, deals 2x damage, takes less damage.",            Effect = "Enrages at 50% HP" },
+        new { Name = "Armored",     Icon = "⬜", Color = Color.Silver,      MinDiff = 4, Desc = "First hit is always blocked by armor.",                                       Effect = "Blocks first hit" },
+        new { Name = "Regenerating",Icon = "🟩", Color = Color.LimeGreen,   MinDiff = 5, Desc = "Slowly heals over time.",                                                    Effect = "Heals over time" },
+        new { Name = "Zigzag",      Icon = "🔵", Color = Color.Cyan,        MinDiff = 4, Desc = "Moves in a zigzag pattern toward player.",                                   Effect = "Zigzag movement" },
+        new { Name = "Phasing",     Icon = "👻", Color = Color.LightBlue,   MinDiff = 6, Desc = "Periodically becomes nearly invisible and untouchable.",                     Effect = "Becomes invisible" },
+        new { Name = "Reflective",  Icon = "💠", Color = Color.LightCyan,   MinDiff = 6, Desc = "20% chance to reflect bullets back at the player.",                          Effect = "Reflects bullets" },
+        new { Name = "Corrupted",   Icon = "🟪", Color = Color.MediumPurple,MinDiff = 7, Desc = "Leaves a damaging purple trail behind it.",                                  Effect = "Leaves damage trail" },
     };
-
-            string[] diffNames = { "Tutorial", "Normal", "Hard", "Nightmare" };
-            Color[] diffColors = { Color.LimeGreen, Color.DodgerBlue, Color.Orange, Color.Red };
 
             int rowH = (int)(60 * s);
             int rowW = (int)(730 * s);
@@ -5847,9 +6034,9 @@ namespace gamething
 
                 // Min difficulty badge
                 Label diffBadge = new Label();
-                diffBadge.Text = diffNames[entry.MinDiff];
+                diffBadge.Text = DifficultyNames[Math.Clamp(entry.MinDiff, 0, 8)];
                 diffBadge.Font = new Font("Arial", Math.Max(1, (int)(8 * s)));
-                diffBadge.ForeColor = diffColors[entry.MinDiff];
+                diffBadge.ForeColor = DifficultyColors[Math.Clamp(entry.MinDiff, 0, 8)];
                 diffBadge.Size = new Size((int)(60 * s), (int)(15 * s));
                 diffBadge.Location = new Point((int)(35 * s), (int)(45 * s));
                 diffBadge.TextAlign = ContentAlignment.MiddleLeft;
@@ -5962,10 +6149,20 @@ namespace gamething
                     descLabel.Text = ach.description;
                     descLabel.Font = new Font("Arial", Math.Max(1, (int)(10 * s)));
                     descLabel.ForeColor = unlocked ? Color.FromArgb(180, 200, 180) : Color.FromArgb(60, 60, 60);
-                    descLabel.Size = new Size((int)(380 * s), achRowH);
+                    descLabel.Size = new Size((int)(320 * s), achRowH);
                     descLabel.Location = new Point((int)(255 * s), 0);
                     descLabel.TextAlign = ContentAlignment.MiddleLeft;
                     row.Controls.Add(descLabel);
+
+                    int reward = GetAchievementRedCoins(ach.id);
+                    Label rewardLabel = new Label();
+                    rewardLabel.Text = $"🔴 {reward}";
+                    rewardLabel.Font = new Font("Segoe UI Emoji", Math.Max(1, (int)(10 * s)));
+                    rewardLabel.ForeColor = unlocked ? Color.FromArgb(180, 80, 80) : Color.FromArgb(80, 40, 40);
+                    rewardLabel.Size = new Size((int)(55 * s), achRowH);
+                    rewardLabel.Location = new Point((int)(580 * s), 0);
+                    rewardLabel.TextAlign = ContentAlignment.MiddleCenter;
+                    row.Controls.Add(rewardLabel);
 
                     Label statusLabel = new Label();
                     statusLabel.Text = unlocked ? "✔" : "✗";
@@ -6032,6 +6229,8 @@ namespace gamething
 
                 Reloading = reloading,
                 ReloadProgress = reloadTime > 0 ? reloadTimer / reloadTime : 0f,
+                P2Reloading = p2Reloading,
+                P2ReloadProgress = reloadTime > 0 ? p2ReloadTimer / reloadTime : 0f,
 
                 FlameWall = flameWall,
                 OrbitCount = orbitCount,
@@ -6202,9 +6401,11 @@ namespace gamething
                 wallTimer = state.WallTimer;
                 boxWall = state.BoxWall;
 
-                // Sync reload state
-                reloading = state.Reloading;
-                reloadTimer = state.ReloadProgress * reloadTime;
+                // Sync reload state (swap: host's reload → P2 on client, client's → mine)
+                p2Reloading = state.Reloading;
+                p2ReloadTimer = state.ReloadProgress * reloadTime;
+                reloading = state.P2Reloading;
+                reloadTimer = state.P2ReloadProgress * reloadTime;
 
                 // Sync upgrade visuals
                 flameWall = state.FlameWall;
@@ -6379,11 +6580,7 @@ namespace gamething
                 p2Y += p2DashVelY * dashProg * deltaTime * 60f;
                 if (ghostDash)
                     dashTrail.Add((p2X, p2Y, dashTrailDuration));
-                if (CollidesWithWall(p2X, p2Y, boxSize))
-                {
-                    p2X = p2DashPrevX;
-                    p2Y = p2DashPrevY;
-                }
+                // P2 can dash through walls
                 if (p2DashTimer <= 0)
                 {
                     p2Dashing = false;
@@ -6395,9 +6592,9 @@ namespace gamething
             p2X = Math.Max(0, Math.Min(p2X, ClientSize.Width - boxSize));
             p2Y = Math.Max(0, Math.Min(p2Y, ClientSize.Height - boxSize));
 
-            // P2 shooting — independent cooldown so P2 fires independently of host
+            // P2 shooting — independent cooldown and ammo
             if (p2ShootCooldown > 0) p2ShootCooldown -= deltaTime;
-            if (input.Shooting && p2ShootCooldown <= 0 && (ammo > 0 || superActive))
+            if (input.Shooting && p2ShootCooldown <= 0 && !p2Reloading && (p2Ammo > 0 || superActive))
             {
                 float cx = p2X + boxSize / 2f;
                 float cy = p2Y + boxSize / 2f;
@@ -6423,13 +6620,13 @@ namespace gamething
                                 vx * (float)Math.Cos(-spread) - vy * (float)Math.Sin(-spread),
                                 vx * (float)Math.Sin(-spread) + vy * (float)Math.Cos(-spread), 0));
                             p2ShootCooldown = superActive ? 0f : Math.Max(0.05f, shootRate - fireRateBonus);
-                            if (!superActive) { ammo--; if (ammo <= 0) reloading = true; }
+                            if (!superActive) { p2Ammo--; if (p2Ammo <= 0) p2Reloading = true; }
                             return;
                         }
                     }
                     bullets.Add((cx + dirX / dist * 20, cy + dirY / dist * 20, vx, vy, 0));
                     p2ShootCooldown = superActive ? 0f : Math.Max(0.05f, shootRate - fireRateBonus);
-                    if (!superActive) { ammo--; if (ammo <= 0) reloading = true; }
+                    if (!superActive) { p2Ammo--; if (p2Ammo <= 0) p2Reloading = true; }
                 }
             }
 
@@ -6580,7 +6777,10 @@ namespace gamething
                 case 11: reloadTime = Math.Max(0.5f, reloadTime - 0.5f); break;
                 case 12: afterburn = true; break;
                 case 13: blinkCooldownTime = Math.Max(5f, blinkCooldownTime - 5f); break;
-                case 14: maxAmmo += 5; ammo = Math.Min(ammo + 5, maxAmmo); break;
+                case 14:
+                    maxAmmo += 5; ammo = Math.Min(ammo + 5, maxAmmo);
+                    if (isMultiplayer) { p2MaxAmmo += 5; p2Ammo = Math.Min(p2Ammo + 5, p2MaxAmmo); }
+                    break;
                 case 15: toughLove = true; break;
                 case 16: superCooldownTime = Math.Max(2f, superCooldownTime - 2f); break;
                 case 17: ricochetBounces += 2; break;
@@ -6872,21 +7072,6 @@ namespace gamething
 
             // --- Difficulty selector (for host) ---
             int selectedDifficulty = 0;
-            var diffNames = new[] { "⭐ Easy", "⭐⭐ Normal", "⭐⭐⭐ Hard", "💀 Nightmare" };
-            var diffColors = new[]
-            {
-                Color.FromArgb(40, 120, 40),
-                Color.FromArgb(40, 80, 140),
-                Color.FromArgb(140, 80, 40),
-                Color.FromArgb(120, 20, 20)
-            };
-            var diffLocked = new[]
-            {
-                false,
-                !difficultyUnlocked_Normal,
-                !difficultyUnlocked_Hard,
-                !difficultyUnlocked_Nightmare
-            };
 
             Label diffLabel = new Label();
             diffLabel.Text = "Difficulty:";
@@ -6900,44 +7085,46 @@ namespace gamething
             mpPanel.Controls.Add(diffLabel);
             yOff += (int)(20 * scale);
 
-            int diffBtnW = (innerW - (int)(6 * scale)) / 2;
-            int diffBtnH = (int)(28 * scale);
+            int diffBtnW = (innerW - 2 * (int)(4 * scale)) / 3;
+            int diffBtnH = (int)(24 * scale);
             List<Button> diffButtons = new List<Button>();
             int diffStartY = yOff;
-            for (int d = 0; d < 4; d++)
+            for (int d = 0; d < 9; d++)
             {
                 int captured = d;
-                int col = d % 2;
-                int row = d / 2;
+                bool locked = d > highestUnlockedDifficulty;
+                int col = d % 3;
+                int row = d / 3;
                 Button diffBtn = new Button();
-                diffBtn.Text = diffLocked[d] ? "🔒 " + diffNames[d].Split(' ')[1] : diffNames[d];
+                diffBtn.Text = locked ? "🔒 " + DifficultyNames[d] : DifficultyStarNames[d];
                 diffBtn.Size = new Size(diffBtnW, diffBtnH);
-                diffBtn.Location = new Point(pad + col * (diffBtnW + (int)(6 * scale)), diffStartY + row * (diffBtnH + (int)(4 * scale)));
-                diffBtn.BackColor = (d == 0 && !diffLocked[d]) ? Color.FromArgb(Math.Min(255, diffColors[d].R + 30), Math.Min(255, diffColors[d].G + 30), Math.Min(255, diffColors[d].B + 30)) : (diffLocked[d] ? Color.FromArgb(40, 40, 40) : diffColors[d]);
-                diffBtn.ForeColor = diffLocked[d] ? Color.Gray : Color.White;
+                diffBtn.Location = new Point(pad + col * (diffBtnW + (int)(4 * scale)), diffStartY + row * (diffBtnH + (int)(3 * scale)));
+                diffBtn.BackColor = (d == 0 && !locked) ? Color.FromArgb(Math.Min(255, DifficultyBgColors[d].R + 30), Math.Min(255, DifficultyBgColors[d].G + 30), Math.Min(255, DifficultyBgColors[d].B + 30)) : (locked ? Color.FromArgb(40, 40, 40) : DifficultyBgColors[d]);
+                diffBtn.ForeColor = locked ? Color.Gray : Color.White;
                 diffBtn.FlatStyle = FlatStyle.Flat;
-                diffBtn.FlatAppearance.BorderColor = (d == 0 && !diffLocked[d]) ? Color.Gold : (diffLocked[d] ? Color.FromArgb(60, 60, 60) : Color.FromArgb(Math.Min(255, diffColors[d].R + 30), Math.Min(255, diffColors[d].G + 30), Math.Min(255, diffColors[d].B + 30)));
-                diffBtn.Font = new Font("Arial", Math.Max(1, (int)(9 * scale)), FontStyle.Bold);
-                diffBtn.Cursor = diffLocked[d] ? Cursors.Default : Cursors.Hand;
-                diffBtn.Enabled = !diffLocked[d];
+                diffBtn.FlatAppearance.BorderColor = (d == 0 && !locked) ? Color.Gold : (locked ? Color.FromArgb(60, 60, 60) : Color.FromArgb(Math.Min(255, DifficultyBgColors[d].R + 30), Math.Min(255, DifficultyBgColors[d].G + 30), Math.Min(255, DifficultyBgColors[d].B + 30)));
+                diffBtn.Font = new Font("Arial", Math.Max(1, (int)(7 * scale)), FontStyle.Bold);
+                diffBtn.Cursor = locked ? Cursors.Default : Cursors.Hand;
+                diffBtn.Enabled = !locked;
                 diffBtn.Visible = false;
                 diffBtn.Click += (s2, e2) =>
                 {
                     selectedDifficulty = captured;
                     for (int i = 0; i < diffButtons.Count; i++)
                     {
-                        if (diffLocked[i]) continue;
+                        bool iLocked = i > highestUnlockedDifficulty;
+                        if (iLocked) continue;
                         bool sel = (i == captured);
                         diffButtons[i].BackColor = sel
-                            ? Color.FromArgb(Math.Min(255, diffColors[i].R + 30), Math.Min(255, diffColors[i].G + 30), Math.Min(255, diffColors[i].B + 30))
-                            : diffColors[i];
-                        diffButtons[i].FlatAppearance.BorderColor = sel ? Color.Gold : Color.FromArgb(Math.Min(255, diffColors[i].R + 30), Math.Min(255, diffColors[i].G + 30), Math.Min(255, diffColors[i].B + 30));
+                            ? Color.FromArgb(Math.Min(255, DifficultyBgColors[i].R + 30), Math.Min(255, DifficultyBgColors[i].G + 30), Math.Min(255, DifficultyBgColors[i].B + 30))
+                            : DifficultyBgColors[i];
+                        diffButtons[i].FlatAppearance.BorderColor = sel ? Color.Gold : Color.FromArgb(Math.Min(255, DifficultyBgColors[i].R + 30), Math.Min(255, DifficultyBgColors[i].G + 30), Math.Min(255, DifficultyBgColors[i].B + 30));
                     }
                 };
                 diffButtons.Add(diffBtn);
                 mpPanel.Controls.Add(diffBtn);
             }
-            yOff = diffStartY + 2 * (diffBtnH + (int)(4 * scale)) + (int)(8 * scale);
+            yOff = diffStartY + 3 * (diffBtnH + (int)(3 * scale)) + (int)(8 * scale);
 
             Button readyBtn = new Button();
             readyBtn.Text = "Ready";
@@ -7017,6 +7204,7 @@ namespace gamething
                 this.Controls.Remove(menuHistoryBtn);
                 this.Controls.Remove(menuBestiaryBtn);
                 this.Controls.Remove(menuAchievementsBtn);
+                this.Controls.Remove(menuShopBtn);
                 this.Controls.Remove(menuMultiplayerBtn);
                 onMainMenu = false;
                 isPaused = false;

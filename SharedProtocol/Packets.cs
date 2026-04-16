@@ -247,6 +247,8 @@ public struct GameStatePacket : INetSerializable
     // Reload state
     public bool Reloading;
     public float ReloadProgress; // 0-1
+    public bool P2Reloading;
+    public float P2ReloadProgress;
 
     // Shared upgrade visuals (synced so client can render correctly)
     public bool FlameWall;
@@ -337,6 +339,8 @@ public struct GameStatePacket : INetSerializable
 
         writer.Put(Reloading);
         writer.Put(ReloadProgress);
+        writer.Put(P2Reloading);
+        writer.Put(P2ReloadProgress);
 
         writer.Put(FlameWall);
         writer.Put(OrbitCount);
@@ -440,6 +444,8 @@ public struct GameStatePacket : INetSerializable
 
         Reloading = reader.GetBool();
         ReloadProgress = reader.GetFloat();
+        P2Reloading = reader.GetBool();
+        P2ReloadProgress = reader.GetFloat();
 
         FlameWall = reader.GetBool();
         OrbitCount = reader.GetInt();
