@@ -81,9 +81,74 @@ namespace gamething
         private bool isExiting = false;
         private bool darkMode = false;
         private Color playerColor = Color.FromArgb(0, 50, 255);
+        // --- Player Sprite ---
+        private Bitmap? playerSpriteCropped = null;
+        private Bitmap? _tintedPlayerSprite = null;     // cached colorized copy for current playerColor
+        private Color   _tintedForColor       = Color.Empty;
+        // Fractions of the cropped sprite image (measured from the blue_guy.png source)
+        private const float SpriteBodyCenterFracX = 0.367f; // where the body center sits in cropped image
+        private const float SpriteBodyCenterFracY = 0.635f;
+        private const float SpriteGunTipFracX     = 0.947f; // where the gun barrel tip is
+        private const float SpriteGunTipFracY     = 0.040f;
+        private const float SpriteBaseAngle       = -0.803f; // radians: angle from body-center to gun-tip in the unrotated sprite (~-46°)
+        private const float SpriteDrawScale       = 2.0f;    // draw sprite at this multiple of playerSize
+        private float _lastValidAimAngle           = 0f;
+        private float _prevAimAngle                = 0f;     // last tick's aim angle, for angular velocity
+        private List<float> enemySmackCooldown    = new List<float>();
+        private const float GunSmackAngularVelThreshold = 12f;    // rad/s (~688°/s) -- swing fast to trigger
+        private const float GunSmackDamage              = 0.5f;
+        private const float GunSmackCooldownTime        = 0.35f; // per-enemy cooldown between smacks
+        // --- Red enemy sprite ---
+        private Bitmap? redEnemySpriteCropped = null;
+        private Bitmap? redParasiticSpriteCropped = null;
+        private Bitmap? gunnerSpriteCropped = null;
+        private Bitmap? gunnerParasiticSpriteCropped = null;
+        private Bitmap? tankSpriteCropped = null;
+        private Bitmap? tankParasiticSpriteCropped = null;
+        private Bitmap? runnerSpriteCropped = null;
+        private Bitmap? runnerParasiticSpriteCropped = null;
+        private Bitmap? bossSpriteCropped = null;
+        private float bossAimAngle = 0f;
+        private Bitmap? cardSpriteBitmap = null;
+        private Dictionary<string, Bitmap> tintedCardCache = new Dictionary<string, Bitmap>();
+        private const float EnemySpriteBodyCenterFracX = 0.5f;
+        private const float EnemySpriteBodyCenterFracY = 0.45f;
+        private const float EnemySpriteBaseAngle       = 1.5708f; // π/2 — unrotated sprite faces down in screen space
+        // Boss gun-tip in sprite UV space (0..1), relative to body center.
+        // Tweak these to align bullet origin with where the gun actually is on boss.png.
+        // X: 0.5 = sprite center, >0.5 = right of body (perpendicular to facing dir)
+        // Y: 0.5 = body center, 1.0 = bottom of sprite (along facing dir)
+        private const float BossGunTipFracX = 0.72f;
+        private const float BossGunTipFracY = 0.95f;
+        private const float EnemySpriteDrawScale       = 1.9f;   // draw sprite at this multiple of enemy size
+        private const float GunnerExtraScale           = 1.15f;  // gunners are a little bigger than regular red guys
+        private const float EnemyMaxRotSpeed           = 3.0f;   // rad/s — how fast an enemy can swing to face the player
+        private List<float> enemyAimAngle             = new List<float>();
         private string playerName = "YOU";
         private List<(float x, float y, float timer, float maxTimer, int size)> deathFlashes = new List<(float x, float y, float timer, float maxTimer, int size)>();
         private List<(float x, float y, float timer, float maxTimer, int size)> hitFlashes = new List<(float x, float y, float timer, float maxTimer, int size)>();
+        // --- Juice / polish state ---
+        private float screenShakeAmp = 0f;          // current shake amplitude (px), decays each frame
+        private float shakeOffsetX = 0f, shakeOffsetY = 0f;
+        private List<(float x, float y, float vy, float timer, float maxTimer, string text, Color color)> damageNumbers = new();
+        private float hurtVignette = 0f;            // 0..1, bumped on damage, decays
+        private float displayedScore = 0f;          // smooth-ticked score for HUD
+        private float displayedHealth = 0f;         // smooth-lerped health for HUD bar
+        private List<(float x, float y, float timer, float maxTimer)> coinSparkles = new();
+        private List<float> enemySpawnAnim = new(); // 0..1 grow factor parallel to enemies
+        private Bitmap? pauseBlurFrame = null;      // cached blurred snapshot when paused
+        // Bullet trails — short fading line behind each bullet
+        private List<(float x1, float y1, float x2, float y2, float timer, float maxTimer)> bulletTrails = new();
+        // Muzzle flashes — brief yellow burst at gun tip on shoot
+        private List<(float x, float y, float angle, float timer, float maxTimer)> muzzleFlashes = new();
+        // Death fragments — exploding sprite pieces when enemies die
+        private List<(float x, float y, float vx, float vy, float angle, float angVel, float timer, float maxTimer, Color color, float size)> deathFragments = new();
+        // Combo / kill-streak counter
+        private int comboCount = 0;
+        private float comboTimer = 0f;             // seconds since last kill — resets combo when expires
+        private const float comboWindow = 2.5f;
+        private float comboShake = 0f;             // visual pop on the combo HUD
+        private int bestCombo = 0;
         private Button? pauseQuitBtn = null;
         // --- Coins ---
         private List<(float x, float y, float velX, float velY)> coins = new List<(float x, float y, float velX, float velY)>();
@@ -587,10 +652,22 @@ namespace gamething
         public gameForm()
         {
             InitializeComponent();
+            LoadPlayerSprite();
+            LoadRedEnemySprite();
+            LoadParasiticEnemySprite();
+            LoadGunnerSprite();
+            LoadGunnerParasiticSprite();
+            LoadTankSprite();
+            LoadTankParasiticSprite();
+            LoadRunnerSprite();
+            LoadRunnerParasiticSprite();
+            LoadBossSprite();
+            LoadCardSprite();
             this.Text = "Red Guy Takeover ALPHA RELEASE";
             this.ClientSize = new Size(1900, 1080);
             this.WindowState = FormWindowState.Maximized;
             this.Deactivate += (s, e) => { if (!onMainMenu) isPaused = true; };
+            this.FormClosing += (s, e) => { if (systemCursorHidden) { Cursor.Show(); systemCursorHidden = false; } };
             this.BackColor = Color.FromArgb(20, 20, 20);
             this.Shown += (s, e) =>
             {
@@ -1134,12 +1211,16 @@ namespace gamething
                 }
 
                 if (!isDashing &&
+                    !hostDead &&
                     bossX < posX + playerSize && bossX + bossSize * scale > posX &&
                     bossY < posY + playerSize && bossY + bossSize * scale > posY)
                 {
                     if (bossHitCooldown <= 0)
                     {
                         health -= bossDamage;
+                        AddDamageNumber(posX + playerSize / 2, posY, bossDamage, Color.FromArgb(255, 255, 80, 80));
+                        AddScreenShake(16f);
+                        hurtVignette = Math.Min(1f, hurtVignette + 0.7f);
                         bossHitCooldown = 0.5f;
                         if (thorns) DamageBoss(1f);
                         if (health <= 0)
@@ -1148,6 +1229,26 @@ namespace gamething
                 }
                 if (bossHitCooldown > 0)
                     bossHitCooldown -= deltaTime;
+
+                // Smooth boss aim toward nearest living target — used for sprite rotation + bullet origin.
+                {
+                    float bcx = bossX + bossSize * scale / 2f;
+                    float bcy = bossY + bossSize * scale / 2f;
+                    float btx = posX + playerSize / 2f;
+                    float bty = posY + playerSize / 2f;
+                    if (decoyActive) { btx = decoyX; bty = decoyY; }
+                    else if (isMultiplayer && !p2Dead)
+                    {
+                        float dh = hostDead ? float.MaxValue : (btx - bcx) * (btx - bcx) + (bty - bcy) * (bty - bcy);
+                        float dp = (p2X + playerSize / 2f - bcx) * (p2X + playerSize / 2f - bcx) + (p2Y + playerSize / 2f - bcy) * (p2Y + playerSize / 2f - bcy);
+                        if (dp < dh) { btx = p2X + playerSize / 2f; bty = p2Y + playerSize / 2f; }
+                    }
+                    float bossDesired = MathF.Atan2(bty - bcy, btx - bcx);
+                    float bossDiff = MathF.IEEERemainder(bossDesired - bossAimAngle, MathF.Tau);
+                    float bossMaxStep = 4f * deltaTime;
+                    if (MathF.Abs(bossDiff) <= bossMaxStep) bossAimAngle = bossDesired;
+                    else bossAimAngle += MathF.Sign(bossDiff) * bossMaxStep;
+                }
 
                 bossShootTimer += deltaTime;
                 if (bossShootTimer >= currentBossShootRate)
@@ -1165,26 +1266,50 @@ namespace gamething
                             if (bsd2 < bsd1) { targetX = p2X + playerSize / 2; targetY = p2Y + playerSize / 2; }
                         }
                     }
-                    float bsDirX = targetX - (bossX + bossSize * scale / 2);
-                    float bsDirY = targetY - (bossY + bossSize * scale / 2);
-                    float bsDist = (float)Math.Sqrt(bsDirX * bsDirX + bsDirY * bsDirY);
-                    if (bsDist > 0)
+                    // Fire along the gun's actual facing direction (bossAimAngle), not the
+                    // player's instantaneous position — that way bullets visibly leave the gun.
+                    float facX = MathF.Cos(bossAimAngle);
+                    float facY = MathF.Sin(bossAimAngle);
+                    float bcx = bossX + bossSize * scale / 2f;
+                    float bcy = bossY + bossSize * scale / 2f;
+                    float originX, originY;
+                    if (bossSpriteCropped != null)
                     {
-                        float[] angles = { -0.3f, -0.1f, 0.1f, 0.3f };
-                        foreach (float offset in angles)
-                        {
-                            float cos = (float)Math.Cos(offset);
-                            float sin = (float)Math.Sin(offset);
-                            float rotX = (bsDirX / bsDist) * cos - (bsDirY / bsDist) * sin;
-                            float rotY = (bsDirX / bsDist) * sin + (bsDirY / bsDist) * cos;
-                            enemyBullets.Add((
-                                bossX + bossSize * scale / 2,
-                                bossY + bossSize * scale / 2,
-                                rotX * bossBulletSpeed,
-                                rotY * bossBulletSpeed
-                            ));
-                        }
+                        // Mirror the math in DrawEnemySprite so the bullet emerges exactly from
+                        // the sprite's gun pixel even when the gun is offset from the centerline.
+                        float bossExtra = 1.05f / EnemySpriteDrawScale;
+                        float drawH = bossSize * scale * EnemySpriteDrawScale * bossExtra;
+                        float drawW = drawH * bossSpriteCropped.Width / (float)bossSpriteCropped.Height;
+                        // Sprite-local offset from body-center to gun-tip (UV → pixels).
+                        float dx = (BossGunTipFracX - EnemySpriteBodyCenterFracX) * drawW;
+                        float dy = (BossGunTipFracY - EnemySpriteBodyCenterFracY) * drawH;
+                        // Sprite is rotated by (aim - baseAngle). cos/sin of that rotation:
+                        float rot = bossAimAngle - EnemySpriteBaseAngle;
+                        float cR = MathF.Cos(rot), sR = MathF.Sin(rot);
+                        originX = bcx + dx * cR - dy * sR;
+                        originY = bcy + dx * sR + dy * cR;
                     }
+                    else
+                    {
+                        float gunReach = bossSize * scale * 0.5f;
+                        originX = bcx + facX * gunReach;
+                        originY = bcy + facY * gunReach;
+                    }
+                    float[] angles = { -0.3f, -0.1f, 0.1f, 0.3f };
+                    foreach (float offset in angles)
+                    {
+                        float cos = MathF.Cos(offset);
+                        float sin = MathF.Sin(offset);
+                        float rotX = facX * cos - facY * sin;
+                        float rotY = facX * sin + facY * cos;
+                        enemyBullets.Add((
+                            originX,
+                            originY,
+                            rotX * bossBulletSpeed,
+                            rotY * bossBulletSpeed
+                        ));
+                    }
+                    _ = targetX; _ = targetY;
                 }
             }
 
@@ -1243,6 +1368,29 @@ namespace gamething
                         dirX = tX - enemies[i].x;
                         dirY = tY - enemies[i].y;
                     }
+                    // Override: move in the direction the enemy is currently facing,
+                    // not straight toward the player. Rotation lags via EnemyMaxRotSpeed,
+                    // so movement curves smoothly while turning. When close to the target,
+                    // blend toward the direct vector so enemies stop circling at melee range.
+                    if (!decoyActive && i < enemyAimAngle.Count)
+                    {
+                        float facX = MathF.Cos(enemyAimAngle[i]);
+                        float facY = MathF.Sin(enemyAimAngle[i]);
+                        float distToPlayer = MathF.Sqrt(dirX * dirX + dirY * dirY);
+                        float directBlend = MathF.Max(0f, MathF.Min(1f, 1f - distToPlayer / (boxSize * 5f)));
+                        if (distToPlayer > 0.01f)
+                        {
+                            float dnx = dirX / distToPlayer;
+                            float dny = dirY / distToPlayer;
+                            dirX = facX * (1f - directBlend) + dnx * directBlend;
+                            dirY = facY * (1f - directBlend) + dny * directBlend;
+                        }
+                        else
+                        {
+                            dirX = facX;
+                            dirY = facY;
+                        }
+                    }
                     float dist = (float)Math.Sqrt(dirX * dirX + dirY * dirY);
                     if (dist > 0)
                     {
@@ -1290,6 +1438,9 @@ namespace gamething
                             float dmg = isTank ? enemyDamage * 3f : enemyDamage;
                             if (berserkerActive) dmg *= 2f;
                             health -= dmg;
+                            AddDamageNumber(posX + playerSize / 2, posY, dmg, Color.FromArgb(255, 255, 80, 80));
+                            AddScreenShake(10f);
+                            hurtVignette = Math.Min(1f, hurtVignette + 0.55f);
                             if (bloodMoney)
                             {
                                 int scoreToAdd = (int)(dmg * 2);
@@ -1544,7 +1695,7 @@ namespace gamething
                     float dx = posX + playerSize / 2 - t.x;
                     float dy = posY + playerSize / 2 - t.y;
                     float dist2 = (float)Math.Sqrt(dx * dx + dy * dy);
-                    if (dist2 < boxSize * 2)
+                    if (!hostDead && dist2 < boxSize * 2)
                     {
                         if (hitCooldown <= 0)
                         {
@@ -1618,6 +1769,8 @@ namespace gamething
             {
                 float nx = b.x + b.velX * deltaTime * 60;
                 float ny = b.y + b.velY * deltaTime * 60;
+                // Trail segment from last position to new — fades over ~0.18s
+                bulletTrails.Add((b.x, b.y, nx, ny, 0.18f, 0.18f));
                 float newVelX = b.velX;
                 float newVelY = b.velY;
                 int bounces = b.bounces;
@@ -1778,6 +1931,71 @@ namespace gamething
             }
             bullets = newBullets;
 
+            // Gun smack: rotating the gun fast enough deals chip damage to touched enemies
+            if (!hostDead && playerSpriteCropped != null)
+            {
+                float pcx_gs = posX + playerSize / 2f;
+                float pcy_gs = posY + playerSize / 2f;
+                float curAim = GetClampedAimAngle(pcx_gs, pcy_gs, playerSize);
+                float angDelta = MathF.IEEERemainder(curAim - _prevAimAngle, MathF.Tau);
+                float angVel = deltaTime > 0f ? MathF.Abs(angDelta) / deltaTime : 0f;
+                _prevAimAngle = curAim;
+
+                for (int i = 0; i < enemySmackCooldown.Count; i++)
+                    if (enemySmackCooldown[i] > 0f) enemySmackCooldown[i] -= deltaTime;
+
+                if (angVel > GunSmackAngularVelThreshold)
+                {
+                    var (smackTipX, smackTipY) = GetGunTipWorldAtAngle(pcx_gs, pcy_gs, playerSize, curAim);
+                    for (int i = 0; i < enemies.Count; i++)
+                    {
+                        if (!enemyAlive[i]) continue;
+                        if (i < enemySmackCooldown.Count && enemySmackCooldown[i] > 0f) continue;
+                        bool isTank_s = i < enemyIsTank.Count && enemyIsTank[i];
+                        bool canShoot_s = i < enemyCanShoot.Count && enemyCanShoot[i];
+                        bool isRunner_s = i < enemyIsRunner.Count && enemyIsRunner[i];
+                        int eSize_s = isTank_s ? boxSize + 20 : canShoot_s ? boxSize + 8 : isRunner_s ? boxSize - 8 : boxSize;
+                        if (GunSegmentIntersectsRect(pcx_gs, pcy_gs, smackTipX, smackTipY, enemies[i].x, enemies[i].y, eSize_s))
+                        {
+                            DamageEnemy(i, GunSmackDamage);
+                            if (i < enemySmackCooldown.Count) enemySmackCooldown[i] = GunSmackCooldownTime;
+                        }
+                    }
+                }
+            }
+
+            // Update enemy aim angles with a rotation speed limit (smooth turning toward the player).
+            // Closer enemies turn faster — keeps them from circling around the player at melee range.
+            {
+                float px = posX + playerSize / 2f;
+                float py = posY + playerSize / 2f;
+                for (int i = 0; i < enemies.Count; i++)
+                {
+                    if (i >= enemyAimAngle.Count) break;
+                    if (!enemyAlive[i]) continue;
+                    float ecx = enemies[i].x + (boxSize) / 2f;
+                    float ecy = enemies[i].y + (boxSize) / 2f;
+                    // Pick nearest living target (host or p2) for aim
+                    float tx = px, ty = py;
+                    if (isMultiplayer && !p2Dead)
+                    {
+                        float d1h = hostDead ? float.MaxValue : (px - ecx) * (px - ecx) + (py - ecy) * (py - ecy);
+                        float d2p = (p2X + playerSize / 2f - ecx) * (p2X + playerSize / 2f - ecx) + (p2Y + playerSize / 2f - ecy) * (p2Y + playerSize / 2f - ecy);
+                        if (d2p < d1h) { tx = p2X + playerSize / 2f; ty = p2Y + playerSize / 2f; }
+                    }
+                    float distToTarget = MathF.Sqrt((tx - ecx) * (tx - ecx) + (ty - ecy) * (ty - ecy));
+                    // Boost rotation speed when close (4x at very close range, 1x far away)
+                    float proximityBoost = 1f + 6f * MathF.Max(0f, 1f - distToTarget / (boxSize * 6f));
+                    float maxStep = EnemyMaxRotSpeed * proximityBoost * deltaTime;
+                    float desired = MathF.Atan2(ty - ecy, tx - ecx);
+                    float diff = MathF.IEEERemainder(desired - enemyAimAngle[i], MathF.Tau);
+                    if (MathF.Abs(diff) <= maxStep)
+                        enemyAimAngle[i] = desired;
+                    else
+                        enemyAimAngle[i] += MathF.Sign(diff) * maxStep;
+                }
+            }
+
             // Parasites
             var newParasites = new List<(float x, float y, float velX, float velY, float timer, float spawnDelay, float hitCooldown)>();
             var parasitesCopy = new List<(float x, float y, float velX, float velY, float timer, float spawnDelay, float hitCooldown)>(parasites);
@@ -1823,13 +2041,16 @@ namespace gamething
                 newY += newVelY * deltaTime;
 
                 // Check collision with host
-                if (newDelay <= 0 &&
+                if (!hostDead && newDelay <= 0 &&
                     newX + parasiteSize > posX && newX < posX + playerSize &&
                     newY + parasiteSize > posY && newY < posY + playerSize)
                 {
                     if (!parasiteImmune && newHitCooldown <= 0)
                     {
                         health -= enemyDamage * 0.5f;
+                        AddDamageNumber(posX + playerSize / 2, posY, enemyDamage * 0.5f, Color.FromArgb(255, 255, 80, 80));
+                        AddScreenShake(6f);
+                        hurtVignette = Math.Min(1f, hurtVignette + 0.35f);
                         newHitCooldown = 0.5f;
                         if (health <= 0)
                             HandlePlayerDeath();
@@ -1871,12 +2092,16 @@ namespace gamething
                 float nx = b.x + b.velX * deltaTime * 60;
                 float ny = b.y + b.velY * deltaTime * 60;
                 if (CollidesWithWall(nx, ny, enemyBulletSize)) continue;
-                if (nx < posX + playerSize && nx + enemyBulletSize > posX &&
+                if (!hostDead &&
+                    nx < posX + playerSize && nx + enemyBulletSize > posX &&
                     ny < posY + playerSize && ny + enemyBulletSize > posY)
                 {
                     if (hitCooldown <= 0)
                     {
                         health -= enemyBulletDamage;
+                        AddDamageNumber(posX + playerSize / 2, posY, enemyBulletDamage, Color.FromArgb(255, 255, 80, 80));
+                        AddScreenShake(8f);
+                        hurtVignette = Math.Min(1f, hurtVignette + 0.45f);
                         if (bloodMoney)
                         {
                             int scoreToAdd = (int)(enemyBulletDamage * 2);
@@ -1954,6 +2179,7 @@ namespace gamething
                     score += coinWorth;
                     totalScore += coinWorth;
                     totalCoinsCollected++;
+                    AddCoinSparkle(nx + coinSize / 2, ny + coinSize / 2);
                     if (medic)
                     {
                         health = Math.Min(health + 0.5f, maxHealth);
@@ -2286,7 +2512,125 @@ namespace gamething
                 catch { /* network error, skip frame */ }
             }
 
+            UpdateJuice(deltaTime);
             this.Invalidate();
+        }
+
+        private void UpdateJuice(float dt)
+        {
+            // Screen shake
+            if (screenShakeAmp > 0.01f)
+            {
+                screenShakeAmp = Math.Max(0f, screenShakeAmp - screenShakeAmp * 8f * dt - 30f * dt);
+                float a = (float)(rng.NextDouble() * Math.PI * 2);
+                shakeOffsetX = (float)Math.Cos(a) * screenShakeAmp;
+                shakeOffsetY = (float)Math.Sin(a) * screenShakeAmp;
+            }
+            else
+            {
+                screenShakeAmp = 0f;
+                shakeOffsetX = 0f;
+                shakeOffsetY = 0f;
+            }
+
+            // Hurt vignette decays
+            if (hurtVignette > 0f)
+                hurtVignette = Math.Max(0f, hurtVignette - dt * 1.6f);
+
+            // Smooth score (eases toward target)
+            if (Math.Abs(displayedScore - score) < 0.5f) displayedScore = score;
+            else displayedScore += (score - displayedScore) * Math.Min(1f, dt * 8f);
+
+            // Smooth health lerp
+            if (Math.Abs(displayedHealth - health) < 0.05f) displayedHealth = health;
+            else displayedHealth += (health - displayedHealth) * Math.Min(1f, dt * 10f);
+
+            // Damage numbers update
+            for (int i = damageNumbers.Count - 1; i >= 0; i--)
+            {
+                var d = damageNumbers[i];
+                d.timer -= dt;
+                d.y += d.vy * dt;
+                d.vy += 60f * dt; // mild gravity slowdown
+                if (d.timer <= 0f) damageNumbers.RemoveAt(i);
+                else damageNumbers[i] = d;
+            }
+
+            // Coin sparkles
+            for (int i = coinSparkles.Count - 1; i >= 0; i--)
+            {
+                var s = coinSparkles[i];
+                s.timer -= dt;
+                if (s.timer <= 0f) coinSparkles.RemoveAt(i);
+                else coinSparkles[i] = s;
+            }
+
+            // Bullet trails fade out
+            for (int i = bulletTrails.Count - 1; i >= 0; i--)
+            {
+                var t = bulletTrails[i];
+                t.timer -= dt;
+                if (t.timer <= 0f) bulletTrails.RemoveAt(i);
+                else bulletTrails[i] = t;
+            }
+
+            // Muzzle flashes fade quickly
+            for (int i = muzzleFlashes.Count - 1; i >= 0; i--)
+            {
+                var m = muzzleFlashes[i];
+                m.timer -= dt;
+                if (m.timer <= 0f) muzzleFlashes.RemoveAt(i);
+                else muzzleFlashes[i] = m;
+            }
+
+            // Death fragments — physics + decay
+            for (int i = deathFragments.Count - 1; i >= 0; i--)
+            {
+                var f = deathFragments[i];
+                f.x += f.vx * dt;
+                f.y += f.vy * dt;
+                f.vx *= MathF.Max(0f, 1f - dt * 3f);
+                f.vy *= MathF.Max(0f, 1f - dt * 3f);
+                f.vy += 260f * dt; // gravity
+                f.angle += f.angVel * dt;
+                f.timer -= dt;
+                if (f.timer <= 0f) deathFragments.RemoveAt(i);
+                else deathFragments[i] = f;
+            }
+
+            // Combo timer — resets streak after window of no kills
+            if (comboCount > 0)
+            {
+                comboTimer += dt;
+                if (comboTimer >= comboWindow) { comboCount = 0; comboTimer = 0f; }
+            }
+            if (comboShake > 0f) comboShake = MathF.Max(0f, comboShake - dt * 4f);
+
+            // Enemy spawn anim sync + ramp
+            while (enemySpawnAnim.Count < enemies.Count) enemySpawnAnim.Add(0f);
+            while (enemySpawnAnim.Count > enemies.Count) enemySpawnAnim.RemoveAt(enemySpawnAnim.Count - 1);
+            for (int i = 0; i < enemySpawnAnim.Count; i++)
+            {
+                if (i < enemyAlive.Count && !enemyAlive[i]) { enemySpawnAnim[i] = 0f; continue; }
+                if (enemySpawnAnim[i] < 1f)
+                    enemySpawnAnim[i] = Math.Min(1f, enemySpawnAnim[i] + dt * 4f);
+            }
+        }
+
+        private void AddDamageNumber(float x, float y, float dmg, Color color)
+        {
+            damageNumbers.Add((x + (float)(rng.NextDouble() * 16 - 8), y, -60f - (float)rng.NextDouble() * 30f, 0.8f, 0.8f, ((int)Math.Ceiling(dmg)).ToString(), color));
+        }
+
+        private void AddScreenShake(float amp)
+        {
+            if (amp > screenShakeAmp) screenShakeAmp = Math.Min(28f, amp);
+        }
+
+        private void AddCoinSparkle(float x, float y)
+        {
+            for (int i = 0; i < 4; i++)
+                coinSparkles.Add((x + (float)(rng.NextDouble() * 18 - 9), y + (float)(rng.NextDouble() * 18 - 9), 0.45f, 0.45f));
         }
 
         private void Form1_Paint(object? sender, PaintEventArgs e)
@@ -2336,10 +2680,16 @@ namespace gamething
                     new RectangleF(0, ClientSize.Height - 40 * scaleY, ClientSize.Width, 30 * scaleY),
                     new StringFormat { Alignment = StringAlignment.Center });
 
-                // Draw blue player square
+                // Draw player (sprite facing the enemy, or fallback square)
                 int mSize = (int)(40 * scale);
-                using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+                if (playerSpriteCropped != null)
                 {
+                    float menuAimAngle = (float)Math.Atan2(menuEnemyY - menuPlayerY, menuEnemyX - menuPlayerX);
+                    DrawPlayerSprite(e.Graphics, menuPlayerX, menuPlayerY, mSize, menuAimAngle);
+                }
+                else
+                {
+                    using var path = new System.Drawing.Drawing2D.GraphicsPath();
                     int r = Math.Max(1, mSize / 5);
                     float px = menuPlayerX - mSize / 2;
                     float py = menuPlayerY - mSize / 2;
@@ -2601,6 +2951,11 @@ namespace gamething
             else
                 e.Graphics.Clear(Color.White);
 
+            // Apply screen shake to the world (HUD will be untranslated below)
+            var __shakeState = e.Graphics.Save();
+            if (shakeOffsetX != 0f || shakeOffsetY != 0f)
+                e.Graphics.TranslateTransform(shakeOffsetX, shakeOffsetY);
+
             Pen borderPen = darkMode ? Pens.Black : Pens.Black;
             Brush textBrush = darkMode ? Brushes.White : Brushes.Black;
             Brush barTextBrush = Brushes.Black;
@@ -2619,16 +2974,28 @@ namespace gamething
             if (bossAlive)
             {
                 float scaledBossSize = bossSize * scale;
-                int br = (int)(scaledBossSize / 5);
-                using (System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath())
+                if (bossSpriteCropped != null)
                 {
-                    path.AddArc(bossX, bossY, br, br, 180, 90);
-                    path.AddArc(bossX + scaledBossSize - br, bossY, br, br, 270, 90);
-                    path.AddArc(bossX + scaledBossSize - br, bossY + scaledBossSize - br, br, br, 0, 90);
-                    path.AddArc(bossX, bossY + scaledBossSize - br, br, br, 90, 90);
-                    path.CloseFigure();
-                    e.Graphics.FillPath(new SolidBrush(Color.FromArgb(120, 0, 0)), path);
-                    e.Graphics.DrawPath(new Pen(darkMode ? Color.White : Color.Black, 3), path);
+                    float bcx = bossX + scaledBossSize / 2f;
+                    float bcy = bossY + scaledBossSize / 2f;
+                    // DrawEnemySprite multiplies size by EnemySpriteDrawScale (1.9). Cancel that
+                    // so the sprite roughly fills the bossSize box (slightly larger).
+                    float bossExtra = 1.05f / EnemySpriteDrawScale;
+                    DrawEnemySprite(e.Graphics, bossSpriteCropped, bcx, bcy, (int)scaledBossSize, bossAimAngle, 255, bossExtra);
+                }
+                else
+                {
+                    int br = (int)(scaledBossSize / 5);
+                    using (System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath())
+                    {
+                        path.AddArc(bossX, bossY, br, br, 180, 90);
+                        path.AddArc(bossX + scaledBossSize - br, bossY, br, br, 270, 90);
+                        path.AddArc(bossX + scaledBossSize - br, bossY + scaledBossSize - br, br, br, 0, 90);
+                        path.AddArc(bossX, bossY + scaledBossSize - br, br, br, 90, 90);
+                        path.CloseFigure();
+                        e.Graphics.FillPath(new SolidBrush(Color.FromArgb(120, 0, 0)), path);
+                        e.Graphics.DrawPath(new Pen(darkMode ? Color.White : Color.Black, 3), path);
+                    }
                 }
                 // Boss health bar
                 float bossHpFill = bossHealth / currentBossMaxHealth;
@@ -2663,26 +3030,46 @@ namespace gamething
                 e.Graphics.DrawRectangle(borderPen, bossBarX, bossBarY, bossBarWidth, bossBarHeight);
                 e.Graphics.DrawString("BOSS IN: " + (int)(bossSpawnInterval_Current - bossSpawnTimer) + "s", GetFontUIBold(), barTextBrush, bossBarX + bossBarWidth / 2 - 40, bossBarY);
             }
-
+            // Draw Player 1
             e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using (System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath())
+            if (!hostDead)
             {
-                float r = playerSize / 5;
-                path.AddArc(posX, posY, r, r, 180, 90);
-                path.AddArc(posX + playerSize - r, posY, r, r, 270, 90);
-                path.AddArc(posX + playerSize - r, posY + playerSize - r, r, r, 0, 90);
-                path.AddArc(posX, posY + playerSize - r, r, r, 90, 90);
-                path.CloseFigure();
-                e.Graphics.FillPath(new SolidBrush(playerColor), path);
-                e.Graphics.DrawPath(borderPen, path);
+                float cx = posX + playerSize / 2f;
+                float cy = posY + playerSize / 2f;
+                if (playerSpriteCropped != null)
+                {
+                    float aimAngle = GetClampedAimAngle(cx, cy, playerSize);
+                    int spriteAlpha = isDashing ? 150 : 255;
+                    DrawPlayerSprite(e.Graphics, cx, cy, playerSize, aimAngle, spriteAlpha);
+                }
+                else
+                {
+                    // fallback rounded rect
+                    using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                    float r = playerSize / 5f;
+                    path.AddArc(posX, posY, r, r, 180, 90);
+                    path.AddArc(posX + playerSize - r, posY, r, r, 270, 90);
+                    path.AddArc(posX + playerSize - r, posY + playerSize - r, r, r, 0, 90);
+                    path.AddArc(posX, posY + playerSize - r, r, r, 90, 90);
+                    path.CloseFigure();
+                    e.Graphics.FillPath(new SolidBrush(isDashing ? Color.FromArgb(150, playerColor.R, playerColor.G, playerColor.B) : playerColor), path);
+                    e.Graphics.DrawPath(borderPen, path);
+                }
             }
 
-            // Reload circle above host/local player
+            // Reload circle near gun tip
             if (reloading && !hostDead)
             {
                 float rcSize = 10 * scale;
-                float rcX = posX + playerSize / 2 - rcSize / 2;
-                float rcY = posY - rcSize - 4 * scale;
+                float pcx = posX + playerSize / 2f;
+                float pcy = posY + playerSize / 2f;
+                float aimAngle = GetClampedAimAngle(pcx, pcy, playerSize);
+                var (tipX, tipY) = GetGunTipWorldAtAngle(pcx, pcy, playerSize, aimAngle);
+                float gap = rcSize * 1.1f;
+                float rcCx = tipX + (float)Math.Cos(aimAngle) * gap;
+                float rcCy = tipY + (float)Math.Sin(aimAngle) * gap;
+                float rcX = rcCx - rcSize / 2;
+                float rcY = rcCy - rcSize / 2;
                 float progress = reloadTime > 0 ? reloadTimer / reloadTime : 0f;
                 int sweepAngle = (int)(360 * progress);
                 using var rcPen = new Pen(Color.FromArgb(200, 255, 215, 0), 2.5f * scale);
@@ -2752,6 +3139,42 @@ namespace gamething
                 int eSize = isTank ? boxSize + 20 : canShoot ? boxSize + 8 : isRunner ? boxSize - 8 : boxSize;
                 int r = Math.Max(1, eSize / 5);
 
+                // Red enemies, gunners, tanks, and runners use rotating sprites. Parasitic variants get parasitic sprites.
+                // Gunners are drawn a little larger via GunnerExtraScale; tank/runner already have adjusted eSize.
+                bool isPlainNormal = !isSlowed && !isTank && !canShoot && !isRunner;
+                bool isPlainGunner = !isSlowed && !isTank && canShoot && !isRunner;
+                bool isPlainTank   = !isSlowed && isTank && !canShoot && !isRunner;
+                bool isPlainRunner = !isSlowed && !isTank && !canShoot && isRunner;
+                Bitmap? enemySprite =
+                      isPlainNormal ? (isParasitic ? redParasiticSpriteCropped : redEnemySpriteCropped)
+                    : isPlainGunner ? (isParasitic ? gunnerParasiticSpriteCropped : gunnerSpriteCropped)
+                    : isPlainTank   ? (isParasitic ? tankParasiticSpriteCropped : tankSpriteCropped)
+                    : isPlainRunner ? (isParasitic ? runnerParasiticSpriteCropped : runnerSpriteCropped)
+                    : null;
+                float spriteExtraScale = isPlainGunner ? GunnerExtraScale : 1f;
+                // Spawn-in pop: ease-out elastic-ish using overshoot curve on enemySpawnAnim
+                if (i < enemySpawnAnim.Count)
+                {
+                    float sa = enemySpawnAnim[i];
+                    if (sa < 1f)
+                    {
+                        // 1 - (1-t)^3 with overshoot at end
+                        float t = sa;
+                        float pop = 1f - (float)Math.Pow(1f - t, 3f);
+                        // overshoot: spike at ~0.7 then settle
+                        float overshoot = 1f + 0.25f * (float)Math.Sin(t * Math.PI) * (1f - t);
+                        spriteExtraScale *= pop * overshoot;
+                    }
+                }
+                if (enemySprite != null)
+                {
+                    float ecx = enemies[i].x + eSize / 2f;
+                    float ecy = enemies[i].y + eSize / 2f;
+                    float drawAim = i < enemyAimAngle.Count ? enemyAimAngle[i]
+                        : MathF.Atan2((posY + playerSize / 2f) - ecy, (posX + playerSize / 2f) - ecx);
+                    DrawEnemySprite(e.Graphics, enemySprite, ecx, ecy, eSize, drawAim, enemyAlpha, spriteExtraScale);
+                }
+                else
                 using (System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath())
                 {
                     path.AddArc(enemies[i].x, enemies[i].y, r, r, 180, 90);
@@ -2965,10 +3388,58 @@ namespace gamething
                     new SolidBrush(Color.FromArgb(a, 255, 255, 255)),
                     f.x - radius, f.y - radius, radius * 2, radius * 2);
             }
+            // Death fragments — rotated colored squares
+            foreach (var f in deathFragments)
+            {
+                float alpha = MathF.Max(0f, f.timer / f.maxTimer);
+                int a = (int)(alpha * 230);
+                var state = e.Graphics.Save();
+                e.Graphics.TranslateTransform(f.x, f.y);
+                e.Graphics.RotateTransform(f.angle * 180f / MathF.PI);
+                using (var b = new SolidBrush(Color.FromArgb(a, f.color)))
+                    e.Graphics.FillRectangle(b, -f.size / 2, -f.size / 2, f.size, f.size);
+                using (var p = new Pen(Color.FromArgb(a, 0, 0, 0), 1.5f))
+                    e.Graphics.DrawRectangle(p, -f.size / 2, -f.size / 2, f.size, f.size);
+                e.Graphics.Restore(state);
+            }
+            // Bullet trails — short fading lines
+            foreach (var t in bulletTrails)
+            {
+                float alpha = MathF.Max(0f, t.timer / t.maxTimer);
+                int a = (int)(alpha * 180);
+                Color tc = darkMode ? Color.FromArgb(a, 255, 230, 140) : Color.FromArgb(a, 220, 60, 30);
+                float w = bulletSize * 0.7f * (0.4f + alpha * 0.6f);
+                using var pen = new Pen(tc, w) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round };
+                e.Graphics.DrawLine(pen, t.x1 + bulletSize / 2, t.y1 + bulletSize / 2, t.x2 + bulletSize / 2, t.y2 + bulletSize / 2);
+            }
             foreach (var b in bullets)
             {
                 e.Graphics.FillRectangle(darkMode ? Brushes.White : Brushes.DarkRed, b.x, b.y, bulletSize, bulletSize);
                 e.Graphics.DrawRectangle(darkMode ? Pens.LightGray : Pens.Black, b.x, b.y, bulletSize, bulletSize);
+            }
+            // Muzzle flashes — bright starburst at gun tip
+            foreach (var m in muzzleFlashes)
+            {
+                float alpha = MathF.Max(0f, m.timer / m.maxTimer);
+                int a = (int)(alpha * 255);
+                float len = 22f * (0.5f + alpha);
+                float wid = 10f * (0.5f + alpha);
+                var state = e.Graphics.Save();
+                e.Graphics.TranslateTransform(m.x, m.y);
+                e.Graphics.RotateTransform(m.angle * 180f / MathF.PI);
+                using (var br = new SolidBrush(Color.FromArgb(a, 255, 240, 120)))
+                {
+                    var pts = new PointF[] {
+                        new PointF(0, 0),
+                        new PointF(len * 0.55f, -wid / 2),
+                        new PointF(len, 0),
+                        new PointF(len * 0.55f, wid / 2)
+                    };
+                    e.Graphics.FillPolygon(br, pts);
+                }
+                using (var br2 = new SolidBrush(Color.FromArgb((int)(a * 0.8f), 255, 255, 230)))
+                    e.Graphics.FillEllipse(br2, -wid * 0.35f, -wid * 0.35f, wid * 0.7f, wid * 0.7f);
+                e.Graphics.Restore(state);
             }
 
 
@@ -3117,6 +3588,51 @@ namespace gamething
                 e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(alpha, 100, 0, 255)), t.x, t.y, playerSize, playerSize);
             }
 
+            // World-space juice: floating damage numbers + coin sparkles
+            using (var dmgFont = new Font(Ufont, 14f * scaleY, FontStyle.Bold))
+            {
+                foreach (var d in damageNumbers)
+                {
+                    float t = Math.Max(0f, d.timer / d.maxTimer);
+                    int alpha = (int)(255 * Math.Min(1f, t * 1.5f));
+                    using var br = new SolidBrush(Color.FromArgb(alpha, d.color));
+                    e.Graphics.DrawString(d.text, dmgFont, br, d.x, d.y);
+                }
+            }
+            foreach (var sp in coinSparkles)
+            {
+                float t = Math.Max(0f, sp.timer / sp.maxTimer);
+                float r = (1f - t) * 8f * scale + 2f;
+                int alpha = (int)(220 * t);
+                using var br = new SolidBrush(Color.FromArgb(alpha, 255, 240, 120));
+                e.Graphics.FillEllipse(br, sp.x - r, sp.y - r, r * 2, r * 2);
+            }
+
+            // Restore from screen-shake transform — HUD draws untranslated
+            e.Graphics.Restore(__shakeState);
+
+            // Hurt vignette (drawn over world, under HUD) — 4 cheap edge gradients only.
+            if (hurtVignette > 0.01f)
+            {
+                int va = (int)Math.Min(180, hurtVignette * 200f);
+                int cw = ClientSize.Width, ch = ClientSize.Height;
+                int band = Math.Min(cw, ch) / 5; // edge thickness
+                Color edge = Color.FromArgb(va, 180, 0, 0);
+                Color clear = Color.FromArgb(0, 180, 0, 0);
+                using (var lg = new System.Drawing.Drawing2D.LinearGradientBrush(
+                    new Rectangle(0, 0, 1, band), edge, clear, System.Drawing.Drawing2D.LinearGradientMode.Vertical))
+                    e.Graphics.FillRectangle(lg, 0, 0, cw, band);
+                using (var lg = new System.Drawing.Drawing2D.LinearGradientBrush(
+                    new Rectangle(0, ch - band, 1, band), clear, edge, System.Drawing.Drawing2D.LinearGradientMode.Vertical))
+                    e.Graphics.FillRectangle(lg, 0, ch - band, cw, band);
+                using (var lg = new System.Drawing.Drawing2D.LinearGradientBrush(
+                    new Rectangle(0, 0, band, 1), edge, clear, System.Drawing.Drawing2D.LinearGradientMode.Horizontal))
+                    e.Graphics.FillRectangle(lg, 0, 0, band, ch);
+                using (var lg = new System.Drawing.Drawing2D.LinearGradientBrush(
+                    new Rectangle(cw - band, 0, band, 1), clear, edge, System.Drawing.Drawing2D.LinearGradientMode.Horizontal))
+                    e.Graphics.FillRectangle(lg, cw - band, 0, band, ch);
+            }
+
             int hpBarWidth = (int)(200 * scaleX);
             int hpBarHeight = (int)(32 * scaleY);
             int hpBarX = (int)(20 * scaleX);
@@ -3126,14 +3642,21 @@ namespace gamething
             Font nameFont = new Font(Ufont, nameFontSize, FontStyle.Bold);
             SizeF nameSize = e.Graphics.MeasureString(playerName, nameFont);
             int nameBoxWidth = Math.Max(hpBarWidth / 3, (int)(nameSize.Width + 10));
-            float hpFill = health / maxHealth;
+            float hpFillReal = health / maxHealth;
+            float hpFill = Math.Max(0f, Math.Min(1f, displayedHealth / maxHealth));
             e.Graphics.DrawRectangle(borderPen, hpBarX, hpBarY - 10 * scaleY, hpBarWidth + 10, hpBarHeight + 60 * scaleY);
             e.Graphics.FillRectangle(Brushes.Goldenrod, hpBarX - 5, hpBarY - 25 * scaleY, nameBoxWidth, hpBarHeight + 75 * scaleY);
             e.Graphics.DrawRectangle(borderPen, hpBarX - 5, hpBarY - 25 * scaleY, nameBoxWidth, hpBarHeight + 75 * scaleY);
             e.Graphics.FillRectangle(Brushes.Goldenrod, hpBarX, hpBarY - 10 * scaleY, hpBarWidth + 10, hpBarHeight + (60 * scaleY));
             e.Graphics.FillRectangle(Brushes.DarkRed, hpBarX, hpBarY, hpBarWidth, hpBarHeight / 2);
-            e.Graphics.FillRectangle(Brushes.Lime, hpBarX, hpBarY, (int)(hpBarWidth * hpFill), hpBarHeight / 2);
-            e.Graphics.DrawString(" " + (int)health, GetFontUI(), barTextBrush, hpBarX, hpBarY);
+            // Trailing "lost-health" yellow ghost between real and displayed
+            if (displayedHealth > health)
+            {
+                using var ghost = new SolidBrush(Color.FromArgb(220, 255, 220, 80));
+                e.Graphics.FillRectangle(ghost, hpBarX + (int)(hpBarWidth * hpFillReal), hpBarY, (int)(hpBarWidth * (hpFill - hpFillReal)), hpBarHeight / 2);
+            }
+            e.Graphics.FillRectangle(Brushes.Lime, hpBarX, hpBarY, (int)(hpBarWidth * Math.Min(hpFill, hpFillReal)), hpBarHeight / 2);
+            e.Graphics.DrawString(" " + (int)displayedHealth, GetFontUI(), barTextBrush, hpBarX, hpBarY);
             e.Graphics.DrawRectangle(Pens.Black, hpBarX, hpBarY, hpBarWidth, hpBarHeight / 2);
             e.Graphics.DrawString(playerName, nameFont, barTextBrush, hpBarX + 5 / scaleX, hpBarY - 25 * scaleY);
 
@@ -3183,7 +3706,40 @@ namespace gamething
             }
             e.Graphics.DrawRectangle(Pens.Black, dashBarX, dashBarY, dashBarWidth, dashBarHeight);
 
-            e.Graphics.DrawString("$: " + score, GetFontUI(), Brushes.Black, 22 * scaleX, (int)(90 * scaleY));
+            e.Graphics.DrawString("$: " + (int)displayedScore, GetFontUI(), Brushes.Black, 22 * scaleX, (int)(90 * scaleY));
+
+            // Combo / kill-streak counter (top-right, with pop shake)
+            if (comboCount >= 2)
+            {
+                float fade = 1f - (comboTimer / comboWindow);
+                int alpha = (int)(MathF.Min(1f, fade * 2f) * 255);
+                // Size scales up with streak, pops on kill
+                float popScale = 1f + comboShake * 0.35f;
+                float baseSize = 22f + MathF.Min(18f, comboCount * 1.2f);
+                using var comboFont = new Font("Segoe UI", baseSize * popScale, FontStyle.Bold);
+                string txt = "x" + comboCount + " COMBO";
+                var sz = e.Graphics.MeasureString(txt, comboFont);
+                float cx = ClientSize.Width - sz.Width - 22 * scaleX;
+                float cy = 90 * scaleY;
+                // subtle shake
+                float sdx = (float)(rng.NextDouble() * 2 - 1) * comboShake * 3f;
+                float sdy = (float)(rng.NextDouble() * 2 - 1) * comboShake * 3f;
+                // color ramps with streak
+                Color cc = comboCount >= 20 ? Color.Magenta
+                         : comboCount >= 10 ? Color.OrangeRed
+                         : comboCount >= 5 ? Color.Orange
+                         : Color.Gold;
+                using (var shadow = new SolidBrush(Color.FromArgb((int)(alpha * 0.7f), 0, 0, 0)))
+                    e.Graphics.DrawString(txt, comboFont, shadow, cx + 2 + sdx, cy + 2 + sdy);
+                using (var br = new SolidBrush(Color.FromArgb(alpha, cc)))
+                    e.Graphics.DrawString(txt, comboFont, br, cx + sdx, cy + sdy);
+                // timer bar below
+                float cbW = sz.Width;
+                float cbH = 4f;
+                float cbY = cy + sz.Height;
+                e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb((int)(alpha * 0.3f), 0, 0, 0)), cx + sdx, cbY, cbW, cbH);
+                e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(alpha, cc)), cx + sdx, cbY, cbW * fade, cbH);
+            }
 
             if (blink)
             {
@@ -3325,6 +3881,67 @@ namespace gamething
                     new SolidBrush(Color.FromArgb(aText, Color.White)),
                     toastX + 50 * scaleX, toastY + 28 * scaleY);
             }
+
+            // Pause blur — overlay cached blurred snapshot on top of world+HUD when pause menu is up.
+            if (isPaused && pauseBlurFrame != null && (pauseResumeBtn != null || pauseQuitBtn != null))
+            {
+                e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+                e.Graphics.DrawImage(pauseBlurFrame, 0, 0, ClientSize.Width, ClientSize.Height);
+                using var dim = new SolidBrush(Color.FromArgb(110, 0, 0, 0));
+                e.Graphics.FillRectangle(dim, 0, 0, ClientSize.Width, ClientSize.Height);
+                using var titleFont = new Font("Arial", 36 * scaleY, FontStyle.Bold);
+                e.Graphics.DrawString("PAUSED", titleFont, Brushes.White,
+                    new RectangleF(0, ClientSize.Height / 2f - 100 * scaleY, ClientSize.Width, 60 * scaleY),
+                    new StringFormat { Alignment = StringAlignment.Center });
+            }
+
+            // Custom aim reticle — drawn on top of everything (still in-game only).
+            bool showReticle = !onMainMenu && !hostDead && (!isPaused || activeUpgradePanel != null);
+            if (showReticle && activeUpgradePanel == null)
+            {
+                // When the upgrade panel is open, the reticle is drawn by the panel's own
+                // Paint handler (since the panel occludes the form).
+                DrawAimReticle(e.Graphics, mousePos.X, mousePos.Y);
+            }
+            // Hide the OS cursor whenever the crosshair is visible.
+            if (showReticle && !systemCursorHidden)
+            {
+                Cursor.Hide();
+                systemCursorHidden = true;
+            }
+            else if (!showReticle && systemCursorHidden)
+            {
+                Cursor.Show();
+                systemCursorHidden = false;
+            }
+        }
+
+        private bool systemCursorHidden = false;
+
+        private void DrawAimReticle(Graphics g, float mx, float my)
+        {
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            // pulse based on shoot cooldown / reload state
+            float pulse = (float)Math.Sin(Environment.TickCount / 180.0) * 0.5f + 0.5f;
+            Color ringColor = reloading ? Color.FromArgb(220, 255, 200, 60)
+                            : ammo <= 0 ? Color.FromArgb(220, 255, 80, 80)
+                            : Color.FromArgb(220, 240, 240, 240);
+            float baseR = 14f * scale;
+            float r = baseR + pulse * 2f * scale;
+            using (var outer = new Pen(ringColor, 2.0f * scale))
+                g.DrawEllipse(outer, mx - r, my - r, r * 2, r * 2);
+            // crosshair lines with a center gap
+            using (var line = new Pen(ringColor, 1.6f * scale))
+            {
+                float gap = 5f * scale, len = 8f * scale;
+                g.DrawLine(line, mx - gap - len, my, mx - gap, my);
+                g.DrawLine(line, mx + gap, my, mx + gap + len, my);
+                g.DrawLine(line, mx, my - gap - len, mx, my - gap);
+                g.DrawLine(line, mx, my + gap, mx, my + gap + len);
+            }
+            // center dot
+            using (var dot = new SolidBrush(Color.FromArgb(255, ringColor)))
+                g.FillEllipse(dot, mx - 1.5f * scale, my - 1.5f * scale, 3f * scale, 3f * scale);
         }
 
         private void Form1_KeyUp(object? sender, KeyEventArgs e)
@@ -3404,32 +4021,350 @@ namespace gamething
         private void Shoot()
         {
             totalBulletsShot++;
-            float dirX = mousePos.X - (posX + playerSize / 2);
-            float dirY = mousePos.Y - (posY + playerSize / 2);
-            float dist = (float)Math.Sqrt(dirX * dirX + dirY * dirY);
-            if (dist > 0)
+            float pcx = posX + playerSize / 2f;
+            float pcy = posY + playerSize / 2f;
+            float angle = GetClampedAimAngle(pcx, pcy, playerSize);
+            float velX = MathF.Cos(angle) * bulletSpeed;
+            float velY = MathF.Sin(angle) * bulletSpeed;
+            var (bx, by) = GetGunTipWorldAtAngle(pcx, pcy, playerSize, angle);
+            muzzleFlashes.Add((bx, by, angle, 0.08f, 0.08f));
+            if (doubleTap)
             {
-                float velX = (dirX / dist) * bulletSpeed;
-                float velY = (dirY / dist) * bulletSpeed;
-                if (doubleTap)
+                doubleTapCounter++;
+                if (doubleTapCounter >= 5)
                 {
-                    doubleTapCounter++;
-                    if (doubleTapCounter >= 5)
-                    {
-                        doubleTapCounter = 0;
-                        float spread = 0.3f;
-                        bullets.Add((posX + playerSize / 2, posY + playerSize / 2, velX, velY, 0));
-                        bullets.Add((posX + playerSize / 2, posY + playerSize / 2,
-                            velX * (float)Math.Cos(spread) - velY * (float)Math.Sin(spread),
-                            velX * (float)Math.Sin(spread) + velY * (float)Math.Cos(spread), 0));
-                        bullets.Add((posX + playerSize / 2, posY + playerSize / 2,
-                            velX * (float)Math.Cos(-spread) - velY * (float)Math.Sin(-spread),
-                            velX * (float)Math.Sin(-spread) + velY * (float)Math.Cos(-spread), 0));
-                        return;
-                    }
+                    doubleTapCounter = 0;
+                    float spread = 0.3f;
+                    bullets.Add((bx, by, velX, velY, 0));
+                    bullets.Add((bx, by,
+                        velX * MathF.Cos(spread) - velY * MathF.Sin(spread),
+                        velX * MathF.Sin(spread) + velY * MathF.Cos(spread), 0));
+                    bullets.Add((bx, by,
+                        velX * MathF.Cos(-spread) - velY * MathF.Sin(-spread),
+                        velX * MathF.Sin(-spread) + velY * MathF.Cos(-spread), 0));
+                    return;
                 }
-                bullets.Add((posX + playerSize / 2, posY + playerSize / 2, velX, velY, 0));
             }
+            bullets.Add((bx, by, velX, velY, 0));
+        }
+
+        private void LoadRedEnemySprite() => redEnemySpriteCropped = LoadSpriteWithCornerBgRemoval("red_guy.png");
+        private void LoadParasiticEnemySprite() => redParasiticSpriteCropped = LoadSpriteWithCornerBgRemoval("red_guy_parasitic.png");
+        private void LoadGunnerSprite() => gunnerSpriteCropped = LoadSpriteWithCornerBgRemoval("red_guy_gunner.png");
+        private void LoadGunnerParasiticSprite() => gunnerParasiticSpriteCropped = LoadSpriteWithCornerBgRemoval("red_guy_gunner_parasitic.png");
+        private void LoadTankSprite() => tankSpriteCropped = LoadSpriteWithCornerBgRemoval("red_guy_tank.png");
+        private void LoadTankParasiticSprite() => tankParasiticSpriteCropped = LoadSpriteWithCornerBgRemoval("red_guy_tank_parasitic.png");
+        private void LoadRunnerSprite() => runnerSpriteCropped = LoadSpriteWithCornerBgRemoval("red_guy_runner.png");
+        private void LoadRunnerParasiticSprite() => runnerParasiticSpriteCropped = LoadSpriteWithCornerBgRemoval("red_guy_runner_parasitic.png");
+        private void LoadBossSprite() => bossSpriteCropped = LoadSpriteWithCornerBgRemoval("boss.png");
+        private void LoadCardSprite()
+        {
+            try
+            {
+                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "card.png");
+                if (File.Exists(path)) cardSpriteBitmap = new Bitmap(path);
+            }
+            catch { }
+        }
+
+        private Bitmap? LoadSpriteWithCornerBgRemoval(string fileName)
+        {
+            try
+            {
+                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", fileName);
+                if (!File.Exists(path)) return null;
+                using var raw = new Bitmap(path);
+                // Sample top-left as background reference and strip matching pixels. Handles
+                // light-blue, saturated-blue, near-white, or any uniform background.
+                RemoveBackgroundByCorner(raw, tolerance: 60);
+                Rectangle bounds = GetSpriteBounds(raw);
+                if (bounds.IsEmpty) return null;
+                return raw.Clone(bounds, raw.PixelFormat);
+            }
+            catch { return null; }
+        }
+
+        // Strips background by sampling the top-left pixel and clearing any pixel within
+        // `tolerance` (per-channel Manhattan distance) of that reference color.
+        private static void RemoveBackgroundByCorner(Bitmap bmp, int tolerance)
+        {
+            // Ensure we can read/write RGBA bytes directly.
+            var rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+            var data = bmp.LockBits(rect,
+                System.Drawing.Imaging.ImageLockMode.ReadWrite,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            int stride = Math.Abs(data.Stride);
+            byte[] px = new byte[stride * bmp.Height];
+            System.Runtime.InteropServices.Marshal.Copy(data.Scan0, px, 0, px.Length);
+            // Reference = top-left pixel (BGRA order)
+            byte refB = px[0], refG = px[1], refR = px[2];
+            for (int y = 0; y < bmp.Height; y++)
+            {
+                int row = y * stride;
+                for (int x = 0; x < bmp.Width; x++)
+                {
+                    int o = row + x * 4;
+                    int db = Math.Abs(px[o]     - refB);
+                    int dg = Math.Abs(px[o + 1] - refG);
+                    int dr = Math.Abs(px[o + 2] - refR);
+                    if (db <= tolerance && dg <= tolerance && dr <= tolerance)
+                        px[o + 3] = 0; // clear alpha
+                }
+            }
+            System.Runtime.InteropServices.Marshal.Copy(px, 0, data.Scan0, px.Length);
+            bmp.UnlockBits(data);
+        }
+
+        private void DrawEnemySprite(Graphics g, Bitmap sprite, float cx, float cy, int size, float aimAngle, int alpha = 255, float extraScale = 1f)
+        {
+            float rot = aimAngle - EnemySpriteBaseAngle;
+            float drawH = size * EnemySpriteDrawScale * extraScale;
+            float drawW = drawH * sprite.Width / (float)sprite.Height;
+            float offX = -EnemySpriteBodyCenterFracX * drawW;
+            float offY = -EnemySpriteBodyCenterFracY * drawH;
+            var saved = g.Transform;
+            g.TranslateTransform(cx, cy);
+            g.RotateTransform((float)(rot * 180f / Math.PI));
+            if (alpha < 255)
+            {
+                using var ia = new System.Drawing.Imaging.ImageAttributes();
+                var cm = new System.Drawing.Imaging.ColorMatrix { Matrix33 = alpha / 255f };
+                ia.SetColorMatrix(cm);
+                g.DrawImage(sprite,
+                    new Rectangle((int)offX, (int)offY, (int)drawW, (int)drawH),
+                    0, 0, sprite.Width, sprite.Height,
+                    GraphicsUnit.Pixel, ia);
+            }
+            else
+            {
+                g.DrawImage(sprite, offX, offY, drawW, drawH);
+            }
+            g.Transform = saved;
+        }
+
+        private void LoadPlayerSprite()
+        {
+            try
+            {
+                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "player_sprite.png");
+                if (!File.Exists(path)) return;
+                using var raw = new Bitmap(path);
+                raw.MakeTransparent(Color.White);
+                Rectangle bounds = GetSpriteBounds(raw);
+                if (bounds.IsEmpty) return;
+                playerSpriteCropped = raw.Clone(bounds, raw.PixelFormat);
+            }
+            catch { }
+        }
+
+        private static Rectangle GetSpriteBounds(Bitmap bmp)
+        {
+            var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
+                System.Drawing.Imaging.ImageLockMode.ReadOnly,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            byte[] px = new byte[Math.Abs(data.Stride) * bmp.Height];
+            System.Runtime.InteropServices.Marshal.Copy(data.Scan0, px, 0, px.Length);
+            bmp.UnlockBits(data);
+            int stride = Math.Abs(data.Stride);
+            int minX = bmp.Width, maxX = 0, minY = bmp.Height, maxY = 0;
+            for (int y = 0; y < bmp.Height; y++)
+                for (int x = 0; x < bmp.Width; x++)
+                    if (px[y * stride + x * 4 + 3] > 20)
+                    {
+                        if (x < minX) minX = x; if (x > maxX) maxX = x;
+                        if (y < minY) minY = y; if (y > maxY) maxY = y;
+                    }
+            return minX > maxX ? Rectangle.Empty : new Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1);
+        }
+
+        // Returns gun tip world position for a given explicit aim angle (wall-clamp-aware callers use this)
+        private (float x, float y) GetGunTipWorldAtAngle(float cx, float cy, int pSize, float aimAngle)
+        {
+            if (playerSpriteCropped == null) return (cx, cy);
+            float rot = aimAngle - SpriteBaseAngle;
+            float drawH = pSize * SpriteDrawScale;
+            float drawW = drawH * playerSpriteCropped.Width / (float)playerSpriteCropped.Height;
+            float dx = (SpriteGunTipFracX - SpriteBodyCenterFracX) * drawW;
+            float dy = (SpriteGunTipFracY - SpriteBodyCenterFracY) * drawH;
+            float cosR = MathF.Cos(rot), sinR = MathF.Sin(rot);
+            return (cx + dx * cosR - dy * sinR, cy + dx * sinR + dy * cosR);
+        }
+
+        // Returns gun tip world position using wall-clamped aim angle from current mousePos
+        private (float x, float y) GetGunTipWorld(float cx, float cy, int pSize)
+        {
+            float aimAngle = GetClampedAimAngle(cx, cy, pSize);
+            return GetGunTipWorldAtAngle(cx, cy, pSize, aimAngle);
+        }
+
+        // Returns a colorized copy of the player sprite tinted to playerColor. Cached and regenerated
+        // only when playerColor changes, so the per-pixel pass runs at most once per color pick.
+        private Bitmap? GetTintedPlayerSprite()
+        {
+            if (playerSpriteCropped == null) return null;
+            if (_tintedPlayerSprite != null && _tintedForColor.ToArgb() == playerColor.ToArgb())
+                return _tintedPlayerSprite;
+            _tintedPlayerSprite?.Dispose();
+            _tintedPlayerSprite = ColorizeBitmap(playerSpriteCropped, playerColor);
+            _tintedForColor = playerColor;
+            return _tintedPlayerSprite;
+        }
+
+        // Colorizes by replacing each colored pixel's hue + saturation with the target's,
+        // while preserving its original lightness (so shading/highlights stay consistent).
+        // Near-black outlines are left untouched so the sprite keeps its ink border.
+        // Rotate hue by deltaHue degrees, preserve saturation and lightness.
+        // Used to retint the (red) card.png to match each upgrade category.
+        private static Bitmap HueShiftBitmap(Bitmap src, float deltaHue)
+        {
+            var copy = new Bitmap(src.Width, src.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(copy)) g.DrawImage(src, 0, 0, src.Width, src.Height);
+            var rect = new Rectangle(0, 0, copy.Width, copy.Height);
+            var data = copy.LockBits(rect,
+                System.Drawing.Imaging.ImageLockMode.ReadWrite,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            int stride = Math.Abs(data.Stride);
+            byte[] px = new byte[stride * copy.Height];
+            System.Runtime.InteropServices.Marshal.Copy(data.Scan0, px, 0, px.Length);
+            for (int y = 0; y < copy.Height; y++)
+            {
+                int row = y * stride;
+                for (int x = 0; x < copy.Width; x++)
+                {
+                    int o = row + x * 4;
+                    if (px[o + 3] == 0) continue;
+                    byte bC = px[o], gC = px[o + 1], rC = px[o + 2];
+                    RgbToHsl(rC, gC, bC, out float h, out float s, out float l);
+                    if (s < 0.04f) continue; // skip neutral grays so outlines/highlights stay clean
+                    h = (h + deltaHue) % 360f; if (h < 0) h += 360f;
+                    HslToRgb(h, s, l, out byte r2, out byte g2, out byte b2);
+                    px[o] = b2; px[o + 1] = g2; px[o + 2] = r2;
+                }
+            }
+            System.Runtime.InteropServices.Marshal.Copy(px, 0, data.Scan0, px.Length);
+            copy.UnlockBits(data);
+            return copy;
+        }
+
+        private Bitmap? GetTintedCardForCategory(string category)
+        {
+            if (cardSpriteBitmap == null) return null;
+            if (tintedCardCache.TryGetValue(category, out var cached)) return cached;
+            const float SourceHue = 0f; // card.png is red
+            float targetHue = GetCategoryColor(category).GetHue();
+            float delta = targetHue - SourceHue;
+            // No-op for offensive (already red): just return the source bitmap.
+            if (MathF.Abs(((delta + 540f) % 360f) - 180f) < 0.5f || MathF.Abs(delta) < 0.5f)
+            {
+                tintedCardCache[category] = cardSpriteBitmap;
+                return cardSpriteBitmap;
+            }
+            var tinted = HueShiftBitmap(cardSpriteBitmap, delta);
+            tintedCardCache[category] = tinted;
+            return tinted;
+        }
+
+        private static Bitmap ColorizeBitmap(Bitmap src, Color target)
+        {
+            var copy = new Bitmap(src.Width, src.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(copy)) g.DrawImage(src, 0, 0, src.Width, src.Height);
+
+            float tH = target.GetHue();         // 0..360 (returns 0 for grayscale targets)
+            float tS = target.GetSaturation();  // 0..1
+
+            var rect = new Rectangle(0, 0, copy.Width, copy.Height);
+            var data = copy.LockBits(rect,
+                System.Drawing.Imaging.ImageLockMode.ReadWrite,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            int stride = Math.Abs(data.Stride);
+            byte[] px = new byte[stride * copy.Height];
+            System.Runtime.InteropServices.Marshal.Copy(data.Scan0, px, 0, px.Length);
+            for (int y = 0; y < copy.Height; y++)
+            {
+                int row = y * stride;
+                for (int x = 0; x < copy.Width; x++)
+                {
+                    int o = row + x * 4;
+                    byte a = px[o + 3];
+                    if (a == 0) continue; // transparent — skip
+                    byte bC = px[o], gC = px[o + 1], rC = px[o + 2];
+                    RgbToHsl(rC, gC, bC, out float h, out float s, out float l);
+                    // Preserve near-black outlines (keeps crisp border on any tint).
+                    if (l < 0.12f) continue;
+                    HslToRgb(tH, tS, l, out byte r2, out byte g2, out byte b2);
+                    px[o]     = b2;
+                    px[o + 1] = g2;
+                    px[o + 2] = r2;
+                }
+            }
+            System.Runtime.InteropServices.Marshal.Copy(px, 0, data.Scan0, px.Length);
+            copy.UnlockBits(data);
+            return copy;
+        }
+
+        private static void RgbToHsl(byte r, byte g, byte b, out float h, out float s, out float l)
+        {
+            float rf = r / 255f, gf = g / 255f, bf = b / 255f;
+            float max = Math.Max(rf, Math.Max(gf, bf));
+            float min = Math.Min(rf, Math.Min(gf, bf));
+            l = (max + min) / 2f;
+            float d = max - min;
+            if (d < 1e-6f) { h = 0f; s = 0f; return; }
+            s = l > 0.5f ? d / (2f - max - min) : d / (max + min);
+            if (max == rf)      h = (gf - bf) / d + (gf < bf ? 6f : 0f);
+            else if (max == gf) h = (bf - rf) / d + 2f;
+            else                h = (rf - gf) / d + 4f;
+            h *= 60f;
+        }
+
+        private static void HslToRgb(float h, float s, float l, out byte r, out byte g, out byte b)
+        {
+            if (s < 1e-6f) { byte v = (byte)Math.Round(l * 255f); r = g = b = v; return; }
+            float q = l < 0.5f ? l * (1f + s) : l + s - l * s;
+            float p = 2f * l - q;
+            float hk = h / 360f;
+            r = (byte)Math.Round(HueToChannel(p, q, hk + 1f / 3f) * 255f);
+            g = (byte)Math.Round(HueToChannel(p, q, hk) * 255f);
+            b = (byte)Math.Round(HueToChannel(p, q, hk - 1f / 3f) * 255f);
+        }
+
+        private static float HueToChannel(float p, float q, float t)
+        {
+            if (t < 0f) t += 1f;
+            if (t > 1f) t -= 1f;
+            if (t < 1f / 6f) return p + (q - p) * 6f * t;
+            if (t < 1f / 2f) return q;
+            if (t < 2f / 3f) return p + (q - p) * (2f / 3f - t) * 6f;
+            return p;
+        }
+
+        private void DrawPlayerSprite(Graphics g, float cx, float cy, int pSize, float aimAngle, int alpha = 255)
+        {
+            var sprite = GetTintedPlayerSprite();
+            if (sprite == null) return;
+            float rot = aimAngle - SpriteBaseAngle;
+            float drawH = pSize * SpriteDrawScale;
+            float drawW = drawH * sprite.Width / (float)sprite.Height;
+            float offX = -SpriteBodyCenterFracX * drawW;
+            float offY = -SpriteBodyCenterFracY * drawH;
+            var saved = g.Transform;
+            g.TranslateTransform(cx, cy);
+            g.RotateTransform((float)(rot * 180f / Math.PI));
+            if (alpha < 255)
+            {
+                using var ia = new System.Drawing.Imaging.ImageAttributes();
+                var cm = new System.Drawing.Imaging.ColorMatrix { Matrix33 = alpha / 255f };
+                ia.SetColorMatrix(cm);
+                g.DrawImage(sprite,
+                    new Rectangle((int)offX, (int)offY, (int)drawW, (int)drawH),
+                    0, 0, sprite.Width, sprite.Height,
+                    GraphicsUnit.Pixel, ia);
+            }
+            else
+            {
+                g.DrawImage(sprite, offX, offY, drawW, drawH);
+            }
+            g.Transform = saved;
         }
 
         private void ResetGame()
@@ -3509,6 +4444,12 @@ namespace gamething
             inspectedEnemyIndex = -1;
             deathFlashes.Clear();
             hitFlashes.Clear();
+            bulletTrails.Clear();
+            muzzleFlashes.Clear();
+            deathFragments.Clear();
+            comboCount = 0;
+            comboTimer = 0f;
+            comboShake = 0f;
             parasites.Clear();
             parasiteDecayKill = false;
             ricochetExplosion = false;
@@ -3537,6 +4478,8 @@ namespace gamething
             };
             enemyAlive = Enumerable.Repeat(true, enemies.Count).ToList();
             enemyRespawnTimers = new List<float>(new float[enemies.Count]);
+            enemySmackCooldown = new List<float>(new float[enemies.Count]);
+            enemyAimAngle      = new List<float>(new float[enemies.Count]);
             enemyCanShoot = enemies.Select(_ => rng.NextDouble() < shootingEnemyChance).ToList();
             enemyIsTank = enemies.Select((_, idx) => !enemyCanShoot[idx] && rng.NextDouble() < tankEnemyChance).ToList();
             enemyIsRunner = enemies.Select((_, idx) => !enemyCanShoot[idx] && !enemyIsTank[idx] && rng.NextDouble() < runnerEnemyChance).ToList();
@@ -3653,6 +4596,106 @@ namespace gamething
             return (x, y);
         }
 
+        private bool IsPointInAnyWall(float px, float py)
+        {
+            foreach (var w in walls)
+                if (px >= w.x && px <= w.x + w.width && py >= w.y && py <= w.y + w.height)
+                    return true;
+            foreach (var bw in boxWalls)
+                if (wallActive && IsPointInRotatedWall(px, py, bw.x, bw.y, bw.width, bw.height, bw.angle))
+                    return true;
+            if (wallActive && IsPointInRotatedWall(px, py, tempWall.x, tempWall.y, tempWall.width, tempWall.height, tempWall.angle))
+                return true;
+            return false;
+        }
+
+        private bool IsPointInRotatedWall(float px, float py, float wx, float wy, float ww, float wh, float angle)
+        {
+            float cx = px - wx;
+            float cy = py - wy;
+            float cos = MathF.Cos(-angle);
+            float sin = MathF.Sin(-angle);
+            float lx = cos * cx - sin * cy;
+            float ly = sin * cx + cos * cy;
+            return MathF.Abs(lx) < ww / 2f && MathF.Abs(ly) < wh / 2f;
+        }
+
+        // Sample points along a segment and test whether any lies inside an axis-aligned square.
+        private static bool GunSegmentIntersectsRect(float x0, float y0, float x1, float y1, float rx, float ry, float rSize)
+        {
+            const int samples = 10;
+            for (int i = 1; i <= samples; i++)
+            {
+                float t = i / (float)samples;
+                float px = x0 + (x1 - x0) * t;
+                float py = y0 + (y1 - y0) * t;
+                if (px >= rx && px <= rx + rSize && py >= ry && py <= ry + rSize) return true;
+            }
+            return false;
+        }
+
+        // Checks whether the line segment from body center to gun tip at the given angle clears all walls.
+        private bool GunSegmentClearsWalls(float cx, float cy, int pSize, float aimAngle)
+        {
+            if (playerSpriteCropped == null) return true;
+            var (tipX, tipY) = GetGunTipWorldAtAngle(cx, cy, pSize, aimAngle);
+            const int samples = 10;
+            for (int i = 1; i <= samples; i++)
+            {
+                float t = i / (float)samples;
+                float px = cx + (tipX - cx) * t;
+                float py = cy + (tipY - cy) * t;
+                if (IsPointInAnyWall(px, py)) return false;
+            }
+            return true;
+        }
+
+        // Returns aim angle clamped so the gun barrel never clips into any wall.
+        // Rotates incrementally from the last valid angle toward the desired angle,
+        // stopping at the first step that would intersect a wall -- so the gun slides
+        // along walls instead of jumping past them.
+        private float GetClampedAimAngle(float cx, float cy, int pSize)
+        {
+            float desired = MathF.Atan2(mousePos.Y - cy, mousePos.X - cx);
+            float current = _lastValidAimAngle;
+
+            // If the stored "last valid" angle is no longer clear (e.g., player just moved
+            // into a new obstacle configuration), find a fresh valid angle to start from.
+            if (!GunSegmentClearsWalls(cx, cy, pSize, current))
+            {
+                bool recovered = false;
+                for (float a = 0f; a < MathF.Tau; a += 0.05f)
+                {
+                    if (GunSegmentClearsWalls(cx, cy, pSize, a))
+                    {
+                        current = a;
+                        recovered = true;
+                        break;
+                    }
+                }
+                if (!recovered) return _lastValidAimAngle; // completely boxed in
+            }
+
+            // Sweep from current toward desired along the shortest arc, stopping at first block.
+            float delta = MathF.IEEERemainder(desired - current, MathF.Tau);
+            float sign = delta >= 0f ? 1f : -1f;
+            float mag = MathF.Abs(delta);
+            const float step = 0.03f; // ~1.7° per sub-step
+            int steps = (int)MathF.Ceiling(mag / step);
+            float best = current;
+            for (int i = 1; i <= steps; i++)
+            {
+                float t = MathF.Min(i * step, mag);
+                float candidate = current + sign * t;
+                if (GunSegmentClearsWalls(cx, cy, pSize, candidate))
+                    best = candidate;
+                else
+                    break;
+            }
+            _lastValidAimAngle = best;
+            return best;
+        }
+
         private void ShowUpgradeMenu()
         {
             int formW = Math.Min(ClientSize.Width - 40, (int)(900 * scale));
@@ -3742,7 +4785,7 @@ namespace gamething
                 new { Title = "Time is Money",   Icon = "★",  Description = "+1 score per money refresh",         Cost = 510,  Stack = "Stacks", Category = "Economy"   },
                 new { Title = "Bigger Player",   Icon = "⬛", Description = "Bigger player, bullet, and steps",  Cost = 600,  Stack = "Stacks", Category = "Defensive" },
                 new { Title = "Stronger Decoy",  Icon = "🧥", Description = "+1s decoy time",                    Cost = 610,  Stack = "Stacks", Category = "Cooldown"  },
-                new { Title = "Minigun Trait",   Icon = "⚡", Description = "Fire rate +0.1",                    Cost = 650,  Stack = "Stacks", Category = "Offensive" },
+                new { Title = "Minigun Trait",   Icon = "⚡", Description = "become minigun",                    Cost = 890,  Stack = "", Category = "Offensive" },
                 new { Title = "Leap of Faith",   Icon = "💨", Description = "+0.1s dash duration",               Cost = 660,  Stack = "Stacks", Category = "Defensive"  },
                 new { Title = "Dash Cooldown",   Icon = "⌛", Description = "-0.1s Dash Cooldown",               Cost = 670,  Stack = "Stacks", Category = "Cooldown"  },
                 new { Title = "Explosive Finish",Icon = "💥", Description = "Last bullet in mag deals 3x dmg",  Cost = 690,  Stack = "",       Category = "Offensive" },
@@ -3991,10 +5034,20 @@ namespace gamething
                 tabX += (int)(85 * s);
             }
 
+            // Hover lift + affordability pulse state, shared with card Paint handlers below.
+            var cardLift = new Dictionary<Panel, float>();
+            var cardBaseY = new Dictionary<Panel, int>();
+            var cardSquish = new Dictionary<Panel, float>(); // 1 right after click, decays to 0
+            float[] pulseT = new float[] { 0f };
+            int cardBaseYDefault = (int)(5 * s);
+            float hoverLiftPx = 10f * s;
+            float squishPx = 8f * s;
+
             System.Windows.Forms.Timer colorTimer = new System.Windows.Forms.Timer();
-            colorTimer.Interval = 50;
+            colorTimer.Interval = 16; // ~60fps for smooth lift
             colorTimer.Tick += (s, e) =>
             {
+                pulseT[0] += 0.12f;
                 Point cursorPos = innerPanel.PointToClient(Cursor.Position);
                 foreach (Control ctrl in innerPanel.Controls)
                 {
@@ -4009,6 +5062,22 @@ namespace gamething
                         c.Cursor = canAfford ? Cursors.Hand : Cursors.Default;
                         var costLbl = c.Controls.OfType<Label>().LastOrDefault();
                         if (costLbl != null) costLbl.ForeColor = canAfford ? Color.Gold : Color.Gray;
+
+                        // Smooth hover lift toward target offset (+ click squish push-down)
+                        if (cardBaseY.TryGetValue(c, out int by))
+                        {
+                            float target = (canAfford && isHovered) ? -hoverLiftPx : 0f;
+                            float curr = cardLift.TryGetValue(c, out float v) ? v : 0f;
+                            curr += (target - curr) * 0.25f;
+                            if (MathF.Abs(target - curr) < 0.1f) curr = target;
+                            cardLift[c] = curr;
+                            float sq = cardSquish.TryGetValue(c, out float sv) ? sv : 0f;
+                            if (sq > 0f) { sq = Math.Max(0f, sq - 0.12f); cardSquish[c] = sq; }
+                            int newTop = by + (int)curr + (int)(sq * squishPx);
+                            if (c.Top != newTop) c.Top = newTop;
+                        }
+                        // Repaint each tick so the pulsing affordability border animates
+                        if (canAfford) c.Invalidate();
                     }
                 }
                 scoreLabel.Text = "💲: " + score;
@@ -4035,47 +5104,52 @@ namespace gamething
                 card.Size = new Size(cardWidth, cardHeight);
                 card.Location = new Point(cardGap + i * (cardWidth + cardGap), (int)(5 * s));
                 card.BackColor = alreadyPurchased ? Color.FromArgb(25, 25, 25) : score >= cost ? Color.FromArgb(50, 50, 80) : Color.FromArgb(40, 40, 40);
+                var tintedCard = GetTintedCardForCategory(category);
+                if (tintedCard != null)
+                {
+                    card.BackgroundImage = tintedCard;
+                    card.BackgroundImageLayout = ImageLayout.Stretch;
+                }
                 card.Cursor = alreadyPurchased ? Cursors.Default : score >= cost ? Cursors.Hand : Cursors.Default;
                 card.Tag = alreadyPurchased ? int.MaxValue : cost;
                 card.AccessibleName = category;
 
-                Panel categoryBar = new Panel();
-                categoryBar.Size = new Size(cardWidth, (int)(8 * s));
-                categoryBar.Location = new Point(0, 0);
-                categoryBar.BackColor = catColor;
-                card.Controls.Add(categoryBar);
-
+                // Title sits inside the dark band at the top of card.png; tinted with category color.
                 Label title = new Label();
                 title.Text = upgrade.Title;
                 title.Font = new Font("Arial", Math.Max(1, (int)(10 * s)), FontStyle.Bold);
-                title.ForeColor = Color.White;
+                title.ForeColor = catColor;
+                title.BackColor = Color.Transparent;
                 title.TextAlign = ContentAlignment.MiddleCenter;
-                title.Size = new Size(cardWidth, (int)(40 * s));
-                title.Location = new Point(0, (int)(10 * s));
+                title.Size = new Size(cardWidth, (int)(28 * s));
+                title.Location = new Point(0, (int)(4 * s));
                 title.AutoSize = false;
 
                 Label icon = new Label();
                 icon.Text = upgrade.Icon;
                 icon.Font = new Font("Segoe UI Emoji", Math.Max(1, (int)(34 * s)));
                 icon.ForeColor = Color.White;
+                icon.BackColor = Color.Transparent;
                 icon.TextAlign = ContentAlignment.MiddleCenter;
                 icon.Size = new Size(cardWidth, (int)(100 * s));
-                icon.Location = new Point(0, (int)(55 * s));
+                icon.Location = new Point(0, (int)(45 * s));
                 icon.AutoSize = false;
 
                 Label desc = new Label();
                 desc.Text = upgrade.Description;
                 desc.Font = new Font("Arial", Math.Max(1, (int)(9 * s)));
                 desc.ForeColor = Color.LightGray;
+                desc.BackColor = Color.Transparent;
                 desc.TextAlign = ContentAlignment.MiddleCenter;
                 desc.Size = new Size(cardWidth - (int)(10 * s), (int)(60 * s));
-                desc.Location = new Point((int)(5 * s), (int)(155 * s));
+                desc.Location = new Point((int)(5 * s), (int)(150 * s));
                 desc.AutoSize = false;
 
                 Label stacking = new Label();
                 stacking.Text = upgrade.Stack;
                 stacking.Font = new Font("Arial", Math.Max(1, (int)(7 * s)));
                 stacking.ForeColor = Color.LightGray;
+                stacking.BackColor = Color.Transparent;
                 stacking.TextAlign = ContentAlignment.MiddleCenter;
                 stacking.Size = new Size(cardWidth - (int)(10 * s), (int)(20 * s));
                 stacking.Location = new Point((int)(5 * s), (int)(210 * s));
@@ -4085,6 +5159,7 @@ namespace gamething
                 categoryLabel.Text = GetCategoryIcon(category) + " " + category;
                 categoryLabel.Font = new Font("Segoe UI Emoji", Math.Max(1, (int)(7 * s)));
                 categoryLabel.ForeColor = Color.FromArgb(180, 180, 180);
+                categoryLabel.BackColor = Color.Transparent;
                 categoryLabel.TextAlign = ContentAlignment.MiddleCenter;
                 categoryLabel.Size = new Size(cardWidth, (int)(20 * s));
                 categoryLabel.Location = new Point(0, (int)(230 * s));
@@ -4094,6 +5169,7 @@ namespace gamething
                 costLabel.Text = cost + " pts";
                 costLabel.Font = new Font("Arial", Math.Max(1, (int)(9 * s)), FontStyle.Bold);
                 costLabel.ForeColor = score >= cost ? Color.Gold : Color.Gray;
+                costLabel.BackColor = Color.Transparent;
                 costLabel.TextAlign = ContentAlignment.MiddleCenter;
                 costLabel.Size = new Size(cardWidth, (int)(30 * s));
                 costLabel.Location = new Point(0, (int)(253 * s));
@@ -4138,6 +5214,35 @@ namespace gamething
 
                 card.Click += clickHandler;
                 foreach (Control c in card.Controls) c.Click += clickHandler;
+
+                MouseEventHandler squishHandler = (ms, me) =>
+                {
+                    if (capturedCard.Tag is int tt && tt == int.MaxValue) return;
+                    if (score < cost) return;
+                    cardSquish[capturedCard] = 1f;
+                };
+                card.MouseDown += squishHandler;
+                foreach (Control c in card.Controls) c.MouseDown += squishHandler;
+
+                // Track baseline Y for hover-lift animation
+                cardBaseY[card] = cardBaseYDefault;
+                cardLift[card] = 0f;
+
+                // Pulsing green border when affordable — clear "you can buy this" cue
+                int captCost = cost;
+                bool captPurchased = alreadyPurchased;
+                card.Paint += (sender, pe) =>
+                {
+                    if (captPurchased) return;
+                    if (score < captCost) return;
+                    float pulse = 0.5f + 0.5f * MathF.Sin(pulseT[0]);
+                    int alpha = (int)(140 + 100 * pulse);
+                    pe.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    using var pen = new Pen(Color.FromArgb(alpha, 90, 240, 130), 2.5f);
+                    var rect = new Rectangle(1, 1, card.Width - 3, card.Height - 3);
+                    pe.Graphics.DrawRectangle(pen, rect);
+                };
+
                 innerPanel.Controls.Add(card);
             }
 
@@ -4199,6 +5304,35 @@ namespace gamething
             activeUpgradePanel = upgradeForm;
             this.Controls.Add(upgradeForm);
             upgradeForm.BringToFront();
+
+            // Reticle overlay as a FORM child (not a panel child) so it can move across
+            // the whole window and sit above every sibling control. Its Region is
+            // shaped like the reticle itself, so all non-reticle pixels are truly
+            // cut out — no grey box, buttons show through between the crosshair lines.
+            var reticleOverlay = new ReticleOverlay(this);
+            reticleOverlay.Size = new Size(80, 80);
+            reticleOverlay.Location = new Point(-200, -200);
+            this.Controls.Add(reticleOverlay);
+            reticleOverlay.BringToFront();
+
+            var reticleTick = new System.Windows.Forms.Timer();
+            reticleTick.Interval = 33;
+            reticleTick.Tick += (s2, e2) =>
+            {
+                if (upgradeForm.IsDisposed)
+                {
+                    reticleTick.Stop(); reticleTick.Dispose();
+                    if (!reticleOverlay.IsDisposed) { this.Controls.Remove(reticleOverlay); reticleOverlay.Dispose(); }
+                    return;
+                }
+                var p = this.PointToClient(Cursor.Position);
+                reticleOverlay.Location = new Point(p.X - reticleOverlay.Width / 2, p.Y - reticleOverlay.Height / 2);
+                reticleOverlay.RefreshShape();
+                reticleOverlay.BringToFront();
+            };
+            reticleTick.Start();
+
+            AnimateZoomIn(upgradeForm);
         }
 
         private void ApplyEnemyBuff()
@@ -4385,6 +5519,7 @@ namespace gamething
 
             this.Controls.Add(deathForm);
             deathForm.BringToFront();
+            AnimateZoomIn(deathForm);
             while (!closed) Application.DoEvents();
             this.Controls.Remove(deathForm);
             deathForm.Dispose();
@@ -4398,7 +5533,7 @@ namespace gamething
         {
             if (i < 0 || i >= enemies.Count || i >= enemyHealth.Count || i >= enemyAlive.Count) return;
             if (!enemyAlive[i]) return;
-            damage += permDamageLevel * 0.2f;
+            damage += permDamageLevel * 0.1f;
 
             // Armor check
             if (i < enemyIsArmored.Count && enemyIsArmored[i] && !enemyArmorBroken[i])
@@ -4432,6 +5567,8 @@ namespace gamething
                  i < enemyCanShoot.Count && enemyCanShoot[i] ? boxSize + 8 :
                  i < enemyIsRunner.Count && enemyIsRunner[i] ? boxSize - 8 : boxSize;
             hitFlashes.Add((enemies[i].x + hFlashSize / 2, enemies[i].y + hFlashSize / 2, 0.1f, 0.1f, hFlashSize));
+            AddDamageNumber(enemies[i].x + boxSize / 2, enemies[i].y, damage, Color.FromArgb(255, 255, 220, 80));
+            AddScreenShake(2f);
             bool isTank = i < enemyIsTank.Count && enemyIsTank[i];
             bool canShoot = i < enemyCanShoot.Count && enemyCanShoot[i];
             bool isRunner = i < enemyIsRunner.Count && enemyIsRunner[i];
@@ -4497,6 +5634,28 @@ namespace gamething
                 enemyCanShoot.Count > i && enemyCanShoot[i] ? boxSize + 8 :
                 enemyIsRunner.Count > i && enemyIsRunner[i] ? boxSize - 8 : boxSize;
                 deathFlashes.Add((enemies[i].x + flashSize / 2, enemies[i].y + flashSize / 2, 0.4f, 0.4f, flashSize));
+                AddScreenShake(isTank ? 14f : canShoot ? 9f : isRunner ? 5f : 7f);
+                // Death ragdoll fragments — pieces flying outward
+                {
+                    float fcx = enemies[i].x + boxSize / 2f;
+                    float fcy = enemies[i].y + boxSize / 2f;
+                    Color fragCol = isTank ? Color.DarkRed : canShoot ? Color.OrangeRed : isRunner ? Color.HotPink : Color.Red;
+                    int nFrags = isTank ? 8 : 5;
+                    for (int f = 0; f < nFrags; f++)
+                    {
+                        float a = (float)(rng.NextDouble() * Math.PI * 2);
+                        float sp = 90f + (float)rng.NextDouble() * 140f;
+                        float sz = boxSize * (0.18f + (float)rng.NextDouble() * 0.22f);
+                        float ang = (float)(rng.NextDouble() * Math.PI * 2);
+                        float av = (float)(rng.NextDouble() * 10f - 5f);
+                        deathFragments.Add((fcx, fcy, MathF.Cos(a) * sp, MathF.Sin(a) * sp, ang, av, 0.7f, 0.7f, fragCol, sz));
+                    }
+                }
+                // Combo / kill-streak
+                comboCount++;
+                comboTimer = 0f;
+                if (comboCount > bestCombo) bestCombo = comboCount;
+                comboShake = 1f;
                 enemyRespawnTimers[i] = enemyRespawnTime;
                 totalKills++;
                 health = Math.Min(health + lifeSteal, maxHealth);
@@ -4594,6 +5753,8 @@ namespace gamething
 
         private void HandlePlayerDeath()
         {
+            // Combo ends on death
+            comboCount = 0; comboTimer = 0f; comboShake = 0f;
             if (isMultiplayer)
             {
                 health = 0;
@@ -4814,6 +5975,7 @@ namespace gamething
 
             this.Controls.Add(readyPanel);
             readyPanel.BringToFront();
+            AnimateZoomIn(readyPanel);
             while (!closed) Application.DoEvents();
             this.Controls.Remove(readyPanel);
             readyPanel.Dispose();
@@ -5001,9 +6163,7 @@ namespace gamething
                             this.Controls.Remove(endlessBtn);
                             this.Controls.Remove(sandboxBtn);
                             this.Controls.Remove(backBtn3);
-                            menuPlayBtn.Visible = true;
-                            menuQuitBtn.Visible = true;
-                            menuPrefsBtn.Visible = true;
+                            AnimateZoomInGroup(new Control[] { menuPlayBtn, menuQuitBtn, menuPrefsBtn, menuHistoryBtn!, menuBestiaryBtn!, menuAchievementsBtn!, menuShopBtn, menuMultiplayerBtn! });
                         };
 
                         this.Controls.Add(endlessBtn);
@@ -5032,9 +6192,7 @@ namespace gamething
                     foreach (var db in diffButtons)
                         this.Controls.Remove(db);
                     this.Controls.Remove(backBtn2);
-                    menuPlayBtn.Visible = true;
-                    menuQuitBtn.Visible = true;
-                    menuPrefsBtn.Visible = true;
+                    AnimateZoomInGroup(new Control[] { menuPlayBtn, menuQuitBtn, menuPrefsBtn, menuHistoryBtn!, menuBestiaryBtn!, menuAchievementsBtn!, menuShopBtn, menuMultiplayerBtn! });
                 };
                 this.Controls.Add(backBtn2);
                 backBtn2.BringToFront();
@@ -5096,9 +6254,7 @@ namespace gamething
                 menuPrefsBackBtn.Click += (s2, e2) =>
                 {
                     onPreferences = false;
-                    menuPlayBtn.Visible = true;
-                    menuQuitBtn.Visible = true;
-                    menuPrefsBtn.Visible = true;
+                    AnimateZoomInGroup(new Control[] { menuPlayBtn, menuQuitBtn, menuPrefsBtn });
                     this.Controls.Remove(menuPrefsBackBtn);
 
                     // Remove color buttons
@@ -5304,6 +6460,13 @@ namespace gamething
             menuPlayBtn.Click += (s, e) => this.ClientSizeChanged -= resizeHandler;
             menuQuitBtn.Click += (s, e) => this.ClientSizeChanged -= resizeHandler;
             menuPrefsBtn.Click += (s, e) => this.ClientSizeChanged -= resizeHandler;
+
+            // Zoom-in the whole main menu group on first show
+            AnimateZoomInGroup(new Control[] {
+                menuPlayBtn, menuQuitBtn, menuPrefsBtn,
+                menuHistoryBtn, menuBestiaryBtn, menuAchievementsBtn,
+                menuShopBtn, menuMultiplayerBtn
+            });
         }
         private void ApplyDifficulty()
         {
@@ -5390,6 +6553,26 @@ namespace gamething
         private Button? pauseResumeBtn = null;
         private void ShowPauseButtons()
         {
+            // Snapshot + downscale-blur the current frame for the pause backdrop
+            try
+            {
+                int cw = Math.Max(1, ClientSize.Width);
+                int ch = Math.Max(1, ClientSize.Height);
+                using var fullBmp = new Bitmap(cw, ch);
+                this.DrawToBitmap(fullBmp, new Rectangle(0, 0, cw, ch));
+                int dw = Math.Max(1, cw / 14);
+                int dh = Math.Max(1, ch / 14);
+                var small = new Bitmap(dw, dh);
+                using (var sg = Graphics.FromImage(small))
+                {
+                    sg.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+                    sg.DrawImage(fullBmp, 0, 0, dw, dh);
+                }
+                pauseBlurFrame?.Dispose();
+                pauseBlurFrame = small;
+            }
+            catch { }
+
             pauseResumeBtn = new Button();
             pauseResumeBtn.Text = "▶ Resume";
             pauseResumeBtn.Size = new Size(200, 45);
@@ -5442,6 +6625,7 @@ namespace gamething
             this.Controls.Add(pauseQuitBtn);
             pauseResumeBtn.BringToFront();
             pauseQuitBtn.BringToFront();
+            AnimateZoomInGroup(new Control[] { pauseResumeBtn, pauseQuitBtn });
         }
 
         private void HidePauseButtons()
@@ -5455,6 +6639,11 @@ namespace gamething
             {
                 this.Controls.Remove(pauseQuitBtn);
                 pauseQuitBtn = null;
+            }
+            if (pauseBlurFrame != null)
+            {
+                pauseBlurFrame.Dispose();
+                pauseBlurFrame = null;
             }
         }
         private void TriggerUnlockAnimation(int diffIndex)
@@ -5485,6 +6674,8 @@ namespace gamething
         {
             while (enemyAlive.Count < enemies.Count) enemyAlive.Add(true);
             while (enemyRespawnTimers.Count < enemies.Count) enemyRespawnTimers.Add(0f);
+            while (enemySmackCooldown.Count < enemies.Count) enemySmackCooldown.Add(0f);
+            while (enemyAimAngle.Count < enemies.Count) enemyAimAngle.Add(0f);
             while (enemyCanShoot.Count < enemies.Count) enemyCanShoot.Add(rng.NextDouble() < shootingEnemyChance);
             while (enemyIsTank.Count < enemies.Count) enemyIsTank.Add(false);
             while (enemyIsRunner.Count < enemies.Count) enemyIsRunner.Add(false);
@@ -5784,6 +6975,7 @@ namespace gamething
 
             this.Controls.Add(shopPanel);
             shopPanel.BringToFront();
+            AnimateZoomIn(shopPanel);
         }
 
         private Panel CreatePaintedOverlay(int baseW, int baseH)
@@ -5817,6 +7009,7 @@ namespace gamething
             overlay.Tag = (Action)(() => closed = true);
             this.Controls.Add(overlay);
             overlay.BringToFront();
+            AnimateZoomIn(overlay);
             while (!closed) Application.DoEvents();
             this.Controls.Remove(overlay);
             overlay.Dispose();
@@ -7181,13 +8374,11 @@ namespace gamething
                 }
                 showDimOverlay = false;
                 this.Invalidate();
-                menuPlayBtn.Visible = true;
-                menuQuitBtn.Visible = true;
-                if (menuPrefsBtn != null) menuPrefsBtn.Visible = true;
-                if (menuBestiaryBtn != null) menuBestiaryBtn.Visible = true;
-                if (menuHistoryBtn != null) menuHistoryBtn.Visible = true;
-                if (menuAchievementsBtn != null) menuAchievementsBtn.Visible = true;
-                if (menuMultiplayerBtn != null) menuMultiplayerBtn.Visible = true;
+                AnimateZoomInGroup(new Control[] {
+                    menuPlayBtn, menuQuitBtn,
+                    menuPrefsBtn!, menuBestiaryBtn!, menuHistoryBtn!,
+                    menuAchievementsBtn!, menuMultiplayerBtn!
+                });
             }
 
             void StartGame(bool asHost)
@@ -7507,10 +8698,174 @@ namespace gamething
 
             startBtn.Click += (s, e) => StartGame(true);
 
+            // Add the backdrop panel first; hide loose controls until the zoom completes,
+            // so the panel zooms in cohesively rather than each label/button animating separately.
+            Control? backdrop = mpControls.FirstOrDefault();
             foreach (var c in mpControls)
             {
                 this.Controls.Add(c);
                 c.BringToFront();
+                if (c != backdrop) c.Visible = false;
+            }
+            if (backdrop != null)
+            {
+                AnimateZoomIn(backdrop, onComplete: () =>
+                {
+                    foreach (var c in mpControls)
+                        if (c != backdrop) c.Visible = true;
+                });
+            }
+        }
+
+        // --- Menu zoom-in animation helpers ---
+        private void AnimateZoomIn(Control c, int durationMs = 180, Action? onComplete = null)
+        {
+            if (c == null) { onComplete?.Invoke(); return; }
+            // Keep bounds at full target; animate a Region clip so nothing draws outside the final rect
+            // (avoids border ghosting from intermediate frames).
+            int fullW = c.Width;
+            int fullH = c.Height;
+            int cx = fullW / 2;
+            int cy = fullH / 2;
+            if (!c.Visible) c.Visible = true;
+            c.Region = new Region(new Rectangle(cx, cy, 1, 1));
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var timer = new System.Windows.Forms.Timer { Interval = 15 };
+            timer.Tick += (s, e) =>
+            {
+                float t = Math.Min(1f, sw.ElapsedMilliseconds / (float)durationMs);
+                float u = 1f - t;
+                float eased = 1f - u * u * u; // easeOutCubic
+                int w = Math.Max(1, (int)(fullW * eased));
+                int h = Math.Max(1, (int)(fullH * eased));
+                c.Region = new Region(new Rectangle(cx - w / 2, cy - h / 2, w, h));
+                if (t >= 1f)
+                {
+                    c.Region = null; // remove clip
+                    timer.Stop();
+                    timer.Dispose();
+                    onComplete?.Invoke();
+                }
+            };
+            timer.Start();
+        }
+
+        private void AnimateZoomInGroup(Control[] controls, int durationMs = 180)
+        {
+            if (controls == null || controls.Length == 0) return;
+            var items = controls.Where(c => c != null).ToArray();
+            if (items.Length == 0) return;
+            var sizes = new Size[items.Length];
+            for (int i = 0; i < items.Length; i++)
+            {
+                sizes[i] = items[i].Size;
+                if (!items[i].Visible) items[i].Visible = true;
+                items[i].Region = new Region(new Rectangle(sizes[i].Width / 2, sizes[i].Height / 2, 1, 1));
+            }
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var timer = new System.Windows.Forms.Timer { Interval = 15 };
+            timer.Tick += (s, e) =>
+            {
+                float t = Math.Min(1f, sw.ElapsedMilliseconds / (float)durationMs);
+                float u = 1f - t;
+                float eased = 1f - u * u * u;
+                for (int i = 0; i < items.Length; i++)
+                {
+                    int w = Math.Max(1, (int)(sizes[i].Width * eased));
+                    int h = Math.Max(1, (int)(sizes[i].Height * eased));
+                    items[i].Region = new Region(new Rectangle(sizes[i].Width / 2 - w / 2, sizes[i].Height / 2 - h / 2, w, h));
+                }
+                if (t >= 1f)
+                {
+                    for (int i = 0; i < items.Length; i++) items[i].Region = null;
+                    timer.Stop();
+                    timer.Dispose();
+                }
+            };
+            timer.Start();
+        }
+
+        private void ShowWithZoom(params Control[] controls)
+        {
+            AnimateZoomInGroup(controls);
+        }
+
+        // Click-through reticle overlay. Its Region is shaped like the reticle itself,
+        // so non-reticle pixels are genuinely cut out of the control — siblings show
+        // through with no grey box.
+        private class ReticleOverlay : Control
+        {
+            private readonly gameForm _host;
+            public ReticleOverlay(gameForm host)
+            {
+                _host = host;
+                SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+                BackColor = Color.Black; // irrelevant — Region cuts away everything but the reticle
+                TabStop = false;
+            }
+
+            public void RefreshShape()
+            {
+                float cx = Width / 2f, cy = Height / 2f;
+                float s = _host.scale;
+                float pulse = (float)Math.Sin(Environment.TickCount / 180.0) * 0.5f + 0.5f;
+                float r = 14f * s + pulse * 2f * s;
+                float ringThickness = 2.0f * s + 1f;
+                float gap = 5f * s, len = 8f * s, lineW = 1.6f * s + 1f;
+                float dotR = 1.5f * s + 0.5f;
+
+                using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                // outer ring annulus = outer ellipse minus inner ellipse
+                using (var outer = new System.Drawing.Drawing2D.GraphicsPath())
+                using (var inner = new System.Drawing.Drawing2D.GraphicsPath())
+                {
+                    outer.AddEllipse(cx - r - ringThickness / 2, cy - r - ringThickness / 2, (r + ringThickness / 2) * 2, (r + ringThickness / 2) * 2);
+                    inner.AddEllipse(cx - r + ringThickness / 2, cy - r + ringThickness / 2, (r - ringThickness / 2) * 2, (r - ringThickness / 2) * 2);
+                    using var region = new Region(outer);
+                    region.Exclude(inner);
+                    // we'll combine by adding ellipse + excluding in the Region itself later
+                    path.AddPath(outer, false);
+                }
+                // 4 tick rects
+                path.AddRectangle(new RectangleF(cx - gap - len, cy - lineW / 2, len, lineW));
+                path.AddRectangle(new RectangleF(cx + gap, cy - lineW / 2, len, lineW));
+                path.AddRectangle(new RectangleF(cx - lineW / 2, cy - gap - len, lineW, len));
+                path.AddRectangle(new RectangleF(cx - lineW / 2, cy + gap, lineW, len));
+                // center dot
+                path.AddEllipse(cx - dotR, cy - dotR, dotR * 2, dotR * 2);
+
+                // Build region: outer disc, then carve out the inner disc for the ring hole,
+                // then re-union the ticks and center dot.
+                var rgn = new Region(path);
+                using (var innerEllipsePath = new System.Drawing.Drawing2D.GraphicsPath())
+                {
+                    innerEllipsePath.AddEllipse(cx - r + ringThickness / 2, cy - r + ringThickness / 2, (r - ringThickness / 2) * 2, (r - ringThickness / 2) * 2);
+                    rgn.Exclude(innerEllipsePath);
+                }
+                // Re-add ticks + dot (they may have been partially inside the inner ellipse)
+                using (var extras = new System.Drawing.Drawing2D.GraphicsPath())
+                {
+                    extras.AddRectangle(new RectangleF(cx - gap - len, cy - lineW / 2, len, lineW));
+                    extras.AddRectangle(new RectangleF(cx + gap, cy - lineW / 2, len, lineW));
+                    extras.AddRectangle(new RectangleF(cx - lineW / 2, cy - gap - len, lineW, len));
+                    extras.AddRectangle(new RectangleF(cx - lineW / 2, cy + gap, lineW, len));
+                    extras.AddEllipse(cx - dotR, cy - dotR, dotR * 2, dotR * 2);
+                    rgn.Union(extras);
+                }
+                this.Region = rgn;
+                Invalidate();
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                _host.DrawAimReticle(e.Graphics, Width / 2f, Height / 2f);
+            }
+            protected override void WndProc(ref Message m)
+            {
+                const int WM_NCHITTEST = 0x0084;
+                const int HTTRANSPARENT = -1;
+                if (m.Msg == WM_NCHITTEST) { m.Result = (IntPtr)HTTRANSPARENT; return; }
+                base.WndProc(ref m);
             }
         }
     }
