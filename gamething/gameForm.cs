@@ -61,6 +61,16 @@ namespace gamething
         // --- Delta Time ---
         private float deltaTime = 0;
         private DateTime lastTick = DateTime.Now;
+        // Delta-time accumulator driving reticle pulse so the crosshair animates
+        // smoothly off the same per-frame clock as the rest of the game.
+        private float reticlePulseTime = 0f;
+        // Reticle "kick" — bumped on every shot, decays exponentially so the
+        // outer ring snaps outward and springs back. Frame-rate independent
+        // because it advances off deltaTime in GameTimer_Tick.
+        private float reticleKick = 0f;
+        // Per-frame hooks (e.g. upgrade-menu reticle) that should refresh every
+        // game tick instead of running on their own fixed-interval Timer.
+        private Action? perFrameReticleTick;
         // --- Dash ---
         private bool isDashing = false;
         private float dashTimer = 0f;
@@ -84,20 +94,20 @@ namespace gamething
         // --- Player Sprite ---
         private Bitmap? playerSpriteCropped = null;
         private Bitmap? _tintedPlayerSprite = null;     // cached colorized copy for current playerColor
-        private Color   _tintedForColor       = Color.Empty;
+        private Color _tintedForColor = Color.Empty;
         // Fractions of the cropped sprite image (measured from the blue_guy.png source)
         private const float SpriteBodyCenterFracX = 0.367f; // where the body center sits in cropped image
         private const float SpriteBodyCenterFracY = 0.635f;
-        private const float SpriteGunTipFracX     = 0.947f; // where the gun barrel tip is
-        private const float SpriteGunTipFracY     = 0.040f;
-        private const float SpriteBaseAngle       = -0.803f; // radians: angle from body-center to gun-tip in the unrotated sprite (~-46°)
-        private const float SpriteDrawScale       = 2.0f;    // draw sprite at this multiple of playerSize
-        private float _lastValidAimAngle           = 0f;
-        private float _prevAimAngle                = 0f;     // last tick's aim angle, for angular velocity
-        private List<float> enemySmackCooldown    = new List<float>();
+        private const float SpriteGunTipFracX = 0.947f; // where the gun barrel tip is
+        private const float SpriteGunTipFracY = 0.040f;
+        private const float SpriteBaseAngle = -0.803f; // radians: angle from body-center to gun-tip in the unrotated sprite (~-46°)
+        private const float SpriteDrawScale = 2.0f;    // draw sprite at this multiple of playerSize
+        private float _lastValidAimAngle = 0f;
+        private float _prevAimAngle = 0f;     // last tick's aim angle, for angular velocity
+        private List<float> enemySmackCooldown = new List<float>();
         private const float GunSmackAngularVelThreshold = 12f;    // rad/s (~688°/s) -- swing fast to trigger
-        private const float GunSmackDamage              = 0.5f;
-        private const float GunSmackCooldownTime        = 0.35f; // per-enemy cooldown between smacks
+        private const float GunSmackDamage = 0.5f;
+        private const float GunSmackCooldownTime = 0.35f; // per-enemy cooldown between smacks
         // --- Red enemy sprite ---
         private Bitmap? redEnemySpriteCropped = null;
         private Bitmap? redParasiticSpriteCropped = null;
@@ -113,17 +123,17 @@ namespace gamething
         private Dictionary<string, Bitmap> tintedCardCache = new Dictionary<string, Bitmap>();
         private const float EnemySpriteBodyCenterFracX = 0.5f;
         private const float EnemySpriteBodyCenterFracY = 0.45f;
-        private const float EnemySpriteBaseAngle       = 1.5708f; // π/2 — unrotated sprite faces down in screen space
+        private const float EnemySpriteBaseAngle = 1.5708f; // π/2 — unrotated sprite faces down in screen space
         // Boss gun-tip in sprite UV space (0..1), relative to body center.
         // Tweak these to align bullet origin with where the gun actually is on boss.png.
         // X: 0.5 = sprite center, >0.5 = right of body (perpendicular to facing dir)
         // Y: 0.5 = body center, 1.0 = bottom of sprite (along facing dir)
         private const float BossGunTipFracX = 0.72f;
         private const float BossGunTipFracY = 0.95f;
-        private const float EnemySpriteDrawScale       = 1.9f;   // draw sprite at this multiple of enemy size
-        private const float GunnerExtraScale           = 1.15f;  // gunners are a little bigger than regular red guys
-        private const float EnemyMaxRotSpeed           = 3.0f;   // rad/s — how fast an enemy can swing to face the player
-        private List<float> enemyAimAngle             = new List<float>();
+        private const float EnemySpriteDrawScale = 1.9f;   // draw sprite at this multiple of enemy size
+        private const float GunnerExtraScale = 1.15f;  // gunners are a little bigger than regular red guys
+        private const float EnemyMaxRotSpeed = 3.0f;   // rad/s — how fast an enemy can swing to face the player
+        private List<float> enemyAimAngle = new List<float>();
         private string playerName = "YOU";
         private List<(float x, float y, float timer, float maxTimer, int size)> deathFlashes = new List<(float x, float y, float timer, float maxTimer, int size)>();
         private List<(float x, float y, float timer, float maxTimer, int size)> hitFlashes = new List<(float x, float y, float timer, float maxTimer, int size)>();
@@ -287,6 +297,23 @@ namespace gamething
         private bool parasiteImmune = false;
 
         private bool lastStand = false;
+        private bool screenWrap = false;
+        private float screenWrapCooldown = 0f;
+        // Overclock: hold-to-fire rate ramps up
+        private bool overclock = false;
+        private float overclockHoldTime = 0f;
+        private const float OverclockMaxHold = 2.5f;          // seconds until fully spun up
+        private const float OverclockMaxBonus = 0.09f;        // subtracted from shootRate at full spin
+        // Glass Cannon: -25% max HP, +40% damage
+        private bool glassCannon = false;
+        // Hit-stop: briefly freeze simulation on enemy death
+        private float hitStopTimer = 0f;
+        // Event waves
+        private string activeEvent = "";                      // "coinRush" | "darkness" | "hail" | ""
+        private float activeEventTime = 0f;                   // remaining time on current event
+        private float nextEventTime = 55f;                    // countdown to next event
+        private float eventSpawnTimer = 0f;                   // sub-timer used by events
+        private static readonly string[] EventPool = { "coinRush", "darkness", "hail" };
         // --- Boss ---
         private bool bossAlive = false;
         private float bossX = 0f;
@@ -383,6 +410,13 @@ namespace gamething
         private bool sandboxMode = false;
 
         private bool onPreferences = false;
+        // User-facing gameplay/visual toggles (all persisted to settings.json).
+        private bool settingEnableHitStop = true;
+        private bool settingEnableScreenShake = true;
+        private bool settingShowDamageNumbers = true;
+        private bool settingShowHitFlashes = true;
+        private bool settingShowKillFlashes = true;
+        private bool settingVsync = false;
         private bool showDimOverlay = false;
         private Panel? activeUpgradePanel = null;
         private Button? menuPrefsBtn = null;
@@ -598,25 +632,58 @@ namespace gamething
             return id switch
             {
                 // Kill achievements: 1, 2, 5, 10, 20
-                "first_blood" => 1, "serial_killer" => 2, "mass_murderer" => 5, "genocide" => 10, "exterminator" => 20,
+                "first_blood" => 1,
+                "serial_killer" => 2,
+                "mass_murderer" => 5,
+                "genocide" => 10,
+                "exterminator" => 20,
                 // Survival: 1, 3, 5, 10, 20
-                "survivor" => 1, "endurance" => 3, "marathon" => 5, "immortal" => 10, "eternal" => 20,
+                "survivor" => 1,
+                "endurance" => 3,
+                "marathon" => 5,
+                "immortal" => 10,
+                "eternal" => 20,
                 // Boss: 2, 5, 10, 20
-                "boss_slayer" => 2, "boss_hunter" => 5, "boss_master" => 10, "boss_legend" => 20,
+                "boss_slayer" => 2,
+                "boss_hunter" => 5,
+                "boss_master" => 10,
+                "boss_legend" => 20,
                 // Score: 1, 2, 5, 10, 25
-                "pocket_change" => 1, "wealthy" => 2, "rich" => 5, "millionaire" => 10, "bezos" => 25,
+                "pocket_change" => 1,
+                "wealthy" => 2,
+                "rich" => 5,
+                "millionaire" => 10,
+                "bezos" => 25,
                 // Upgrades: 1, 3, 5
-                "first_upgrade" => 1, "shopaholic" => 3, "maxed_out" => 5,
+                "first_upgrade" => 1,
+                "shopaholic" => 3,
+                "maxed_out" => 5,
                 // Abilities: 2 each, turret/piercing/homing 3
-                "orbit_unlocked" => 2, "orbit_master" => 5, "blink_user" => 2, "ghost" => 3,
-                "turret_placer" => 3, "piercing_user" => 3, "homing_user" => 3,
+                "orbit_unlocked" => 2,
+                "orbit_master" => 5,
+                "blink_user" => 2,
+                "ghost" => 3,
+                "turret_placer" => 3,
+                "piercing_user" => 3,
+                "homing_user" => 3,
                 // Difficulty: escalating 1-25
-                "beginner_unlock" => 1, "normal_unlock" => 2, "moderate_unlock" => 3,
-                "challenging_unlock" => 5, "hard_unlock" => 8, "expert_unlock" => 12,
-                "extreme_unlock" => 18, "nightmare_unlock" => 25, "nightmare_boss" => 50,
+                "beginner_unlock" => 1,
+                "normal_unlock" => 2,
+                "moderate_unlock" => 3,
+                "challenging_unlock" => 5,
+                "hard_unlock" => 8,
+                "expert_unlock" => 12,
+                "extreme_unlock" => 18,
+                "nightmare_unlock" => 25,
+                "nightmare_boss" => 50,
                 // Misc: 2-5
-                "full_health" => 2, "close_call" => 5, "bullet_hell" => 3,
-                "coin_collector" => 2, "coin_hoarder" => 5, "parasite_immune" => 3, "super_active" => 2,
+                "full_health" => 2,
+                "close_call" => 5,
+                "bullet_hell" => 3,
+                "coin_collector" => 2,
+                "coin_hoarder" => 5,
+                "parasite_immune" => 3,
+                "super_active" => 2,
                 _ => 1
             };
         }
@@ -649,6 +716,162 @@ namespace gamething
             }
         }
 
+        // F11 toggle: borderless fullscreen <-> windowed.
+        private bool isBorderlessFullscreen = false;
+        private FormWindowState prevWindowState = FormWindowState.Maximized;
+        private FormBorderStyle prevBorderStyle = FormBorderStyle.Sizable;
+        private Rectangle prevWindowBounds = Rectangle.Empty;
+        private void ToggleBorderlessFullscreen()
+        {
+            if (!isBorderlessFullscreen)
+            {
+                prevWindowState = this.WindowState;
+                prevBorderStyle = this.FormBorderStyle;
+                prevWindowBounds = this.Bounds;
+                this.WindowState = FormWindowState.Normal;
+                this.FormBorderStyle = FormBorderStyle.None;
+                var screen = Screen.FromControl(this).Bounds;
+                this.Bounds = screen;
+                this.TopMost = false;
+                isBorderlessFullscreen = true;
+            }
+            else
+            {
+                this.FormBorderStyle = prevBorderStyle == FormBorderStyle.None ? FormBorderStyle.Sizable : prevBorderStyle;
+                this.WindowState = prevWindowState;
+                if (prevWindowState == FormWindowState.Normal && prevWindowBounds.Width > 0)
+                    this.Bounds = prevWindowBounds;
+                isBorderlessFullscreen = false;
+            }
+            RecomputeScale();
+        }
+
+        // Helpers for scale-aware control sizing.
+        private Size ScS(int w, int h) => new Size(Math.Max(1, (int)Math.Round(w * scale)), Math.Max(1, (int)Math.Round(h * scale)));
+        private Point ScP(int x, int y) => new Point((int)Math.Round(x * scale), (int)Math.Round(y * scale));
+        private Font ScF(string family, float emSize, FontStyle style = FontStyle.Regular)
+            => new Font(family, Math.Max(1f, emSize * scale), style);
+
+        // Scale helper: tracks each control's ORIGINAL (1.0-scale) size/font so we can
+        // re-apply the current scale every time the window is resized — otherwise
+        // buttons get stuck at the size they had when first registered.
+        private readonly Dictionary<Control, (Size size, float fontSize, FontStyle style, string family)> _scaledControls
+            = new Dictionary<Control, (Size, float, FontStyle, string)>();
+        private void ScaleControlOnce(Control c)
+        {
+            if (c == null) return;
+            if (!_scaledControls.ContainsKey(c))
+            {
+                var origFamily = c.Font?.FontFamily.Name ?? "Arial";
+                var origStyle = c.Font?.Style ?? FontStyle.Regular;
+                var origSize = c.Font?.Size ?? 9f;
+                _scaledControls[c] = (c.Size, origSize, origStyle, origFamily);
+                c.Disposed += (s, e) => _scaledControls.Remove(c);
+            }
+            ApplyScaleToControl(c);
+            foreach (Control ch in c.Controls) ScaleControlOnce(ch);
+        }
+        private void ApplyScaleToControl(Control c)
+        {
+            if (!_scaledControls.TryGetValue(c, out var orig)) return;
+            c.Size = new Size(Math.Max(1, (int)Math.Round(orig.size.Width * scale)), Math.Max(1, (int)Math.Round(orig.size.Height * scale)));
+            try { c.Font = new Font(orig.family, Math.Max(1f, orig.fontSize * scale), orig.style); }
+            catch { /* font load failure — leave existing font */ }
+        }
+        private void ReapplyAllScaling()
+        {
+            foreach (var c in _scaledControls.Keys.ToList())
+            {
+                if (c.IsDisposed) { _scaledControls.Remove(c); continue; }
+                ApplyScaleToControl(c);
+            }
+        }
+
+        // Captured base values for entity/world sizes & speeds at scale=1.
+        // We re-derive each from these on every resize so we don't accumulate
+        // floating-point/rounding drift (which previously made hitboxes
+        // "slightly off" after several resizes).
+        private const int BasePlayerSize = 30;
+        private const int BaseBoxSize = 30;
+        private const int BaseBulletSize = 6;
+        private const int BaseEnemyBulletSize = 10;
+        private const float BasePlayerSpeed = 4.8f;
+        private const float BaseEnemyBulletSpeed = 12f;
+        private const float BaseBossBulletSpeed = 40f;
+
+        private void RecomputeScale()
+        {
+            if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+            float newScaleX = (float)ClientSize.Width / baseWidth;
+            float newScaleY = (float)ClientSize.Height / baseHeight;
+            float newScale = Math.Min(newScaleX, newScaleY);
+            if (newScale <= 0) return;
+            float prev = scale;
+            scaleX = newScaleX; scaleY = newScaleY; scale = newScale;
+            if (prev <= 0) return;
+            float ratio = newScale / prev;
+            if (Math.Abs(ratio - 1f) < 0.001f) return;
+            // Re-derive gameplay sizes from base constants so hitboxes stay
+            // exact regardless of how many resize cycles happen.
+            playerSize = Math.Max(2, (int)Math.Round(BasePlayerSize * scale));
+            boxSize = Math.Max(2, (int)Math.Round(BaseBoxSize * scale));
+            bulletSize = Math.Max(1, (int)Math.Round(BaseBulletSize * scale));
+            enemyBulletSize = Math.Max(1, (int)Math.Round(BaseEnemyBulletSize * scale));
+            speed = BasePlayerSpeed * scale;
+            enemyBulletSpeed = BaseEnemyBulletSpeed * scale;
+            bossBulletSpeed = BaseBossBulletSpeed * scale;
+            currentEnemySpeed *= ratio;
+            // Also reposition the player and existing entities so they stay in view.
+            posX *= ratio; posY *= ratio;
+            p2X *= ratio; p2Y *= ratio;
+            bossX *= ratio; bossY *= ratio;
+            for (int i = 0; i < enemies.Count; i++)
+                enemies[i] = (enemies[i].x * ratio, enemies[i].y * ratio);
+            // Keep main-menu actors anchored to the same proportional spots
+            menuPlayerX *= ratio; menuPlayerY *= ratio;
+            menuEnemyX *= ratio; menuEnemyY *= ratio;
+            menuBulletX *= ratio; menuBulletY *= ratio;
+            // If the menu enemy got knocked off-screen by a previous resize,
+            // pull it back into view so the menu animation stays visible.
+            if (onMainMenu)
+            {
+                if (menuEnemyX > ClientSize.Width - 50) menuEnemyX = ClientSize.Width * 0.75f;
+                if (menuPlayerX < 50 || menuPlayerX > ClientSize.Width - 50) menuPlayerX = ClientSize.Width * 0.25f;
+                if (menuPlayerY < 50 || menuPlayerY > ClientSize.Height - 50) menuPlayerY = ClientSize.Height * 0.6f;
+                if (menuEnemyY < 50 || menuEnemyY > ClientSize.Height - 50) menuEnemyY = ClientSize.Height * 0.6f;
+            }
+            // Re-apply per-control scaling so buttons/fonts track the new scale
+            // (their stored "original" sizes are re-multiplied each call).
+            ReapplyAllScaling();
+            // Re-position main-menu buttons against the new ClientSize.
+            RelayoutMainMenuButtons();
+            // Re-position pause buttons if they're showing.
+            RelayoutPauseButtons();
+        }
+
+        private void RelayoutMainMenuButtons()
+        {
+            if (!onMainMenu) return;
+            int x = (int)(40 * scaleX);
+            int cy = ClientSize.Height / 2;
+            if (menuPlayBtn != null && !menuPlayBtn.IsDisposed) menuPlayBtn.Location = new Point(x, cy);
+            if (menuQuitBtn != null && !menuQuitBtn.IsDisposed) menuQuitBtn.Location = new Point(x, cy + (int)(70 * scale));
+            if (menuPrefsBtn != null && !menuPrefsBtn.IsDisposed) menuPrefsBtn.Location = new Point(x, cy + (int)(160 * scale));
+            if (menuHistoryBtn != null && !menuHistoryBtn.IsDisposed) menuHistoryBtn.Location = new Point(x, cy + (int)(230 * scale));
+            if (menuBestiaryBtn != null && !menuBestiaryBtn.IsDisposed) menuBestiaryBtn.Location = new Point(x, cy + (int)(285 * scale));
+            if (menuAchievementsBtn != null && !menuAchievementsBtn.IsDisposed) menuAchievementsBtn.Location = new Point(x, cy + (int)(340 * scale));
+            if (menuShopBtn != null && !menuShopBtn.IsDisposed) menuShopBtn.Location = new Point(x, cy + (int)(395 * scale));
+            if (menuMultiplayerBtn != null && !menuMultiplayerBtn.IsDisposed) menuMultiplayerBtn.Location = new Point(x, cy + (int)(450 * scale));
+        }
+
+        private void RelayoutPauseButtons()
+        {
+            if (pauseResumeBtn != null && !pauseResumeBtn.IsDisposed)
+                pauseResumeBtn.Location = new Point(ClientSize.Width / 2 - pauseResumeBtn.Width / 2, ClientSize.Height / 2 + (int)(10 * scale));
+            if (pauseQuitBtn != null && !pauseQuitBtn.IsDisposed && pauseResumeBtn != null)
+                pauseQuitBtn.Location = new Point(ClientSize.Width / 2 - pauseQuitBtn.Width / 2, pauseResumeBtn.Bottom + (int)(15 * scale));
+        }
+
         public gameForm()
         {
             InitializeComponent();
@@ -663,16 +886,25 @@ namespace gamething
             LoadRunnerParasiticSprite();
             LoadBossSprite();
             LoadCardSprite();
+            try { SfxPlayer.Init(); } catch { }
+            this.FormClosing += (s, e) => { try { SfxPlayer.Shutdown(); } catch { } };
             this.Text = "Red Guy Takeover ALPHA RELEASE";
             this.ClientSize = new Size(1900, 1080);
             this.WindowState = FormWindowState.Maximized;
             this.Deactivate += (s, e) => { if (!onMainMenu) isPaused = true; };
             this.FormClosing += (s, e) => { if (systemCursorHidden) { Cursor.Show(); systemCursorHidden = false; } };
+            // Recompute scale whenever the window changes size so HUD/UI/world scale
+            // correctly on smaller resolutions (and after windowed resize).
+            this.SizeChanged += (s, e) => RecomputeScale();
             this.BackColor = Color.FromArgb(20, 20, 20);
             this.Shown += (s, e) =>
             {
                 AutoUpdater.RunUpdateAsAdmin = false;
-                AutoUpdater.ReportErrors = true;
+                // Silence the "no updates available / try again later" dialog on
+                // startup. AutoUpdaterDotNET only shows that popup when
+                // ReportErrors is true; with it off, the "update available"
+                // dialog still appears normally when there IS an update.
+                AutoUpdater.ReportErrors = false;
                 AutoUpdater.ApplicationExitEvent += () =>
                 {
                     Application.Exit();
@@ -681,6 +913,7 @@ namespace gamething
                 scaleX = (float)ClientSize.Width / baseWidth;
                 scaleY = (float)ClientSize.Height / baseHeight;
                 scale = Math.Min(scaleX, scaleY);
+                if (scale <= 0) scale = 1f; // safety
                 darkMode = true;
                 LoadDifficultyUnlocks();
                 ApplyDifficulty();
@@ -692,6 +925,7 @@ namespace gamething
                 LoadAchievements();
                 LoadRedCoins();
                 LoadPlayerName();
+                LoadSettings();
             };
             enemyRespawnTimers = new List<float>(new float[enemies.Count]);
             enemyAlive = Enumerable.Repeat(true, enemies.Count).ToList();
@@ -729,6 +963,7 @@ namespace gamething
                         isDashing = true;
                         dashTimer = dashDuration;
                         dashCooldown = dashCooldownTime;
+                        SfxPlayer.Play("dash", 0.55f);
                         float dashLen = (float)Math.Sqrt(velocityX * velocityX + velocityY * velocityY);
                         if (dashLen > 0)
                         {
@@ -738,11 +973,19 @@ namespace gamething
                     }
                     break;
                 case Keys.Escape:
+                    // Esc is the in-game pause toggle — ignore it on the main
+                    // menu (and while the upgrade panel is open) so it can't
+                    // unpause into a hidden round behind the menu.
+                    if (onMainMenu || activeUpgradePanel != null) break;
                     isPaused = !isPaused;
                     if (isPaused)
                         ShowPauseButtons();
                     else
                         HidePauseButtons();
+                    break;
+                case Keys.F11:
+                    e.SuppressKeyPress = true;
+                    ToggleBorderlessFullscreen();
                     break;
                 case Keys.Q:
                     if (isMultiplayer && !isNetHost)
@@ -853,9 +1096,35 @@ namespace gamething
         private void GameTimer_Tick(object? sender, EventArgs e)
         {
             if (isExiting) return;
+            // V-sync: block until the next vblank before starting the frame so tick
+            // cadence matches the monitor's refresh rate. DwmFlush is essentially
+            // free when composition is enabled (Win10/11 desktop always is).
+            if (settingVsync)
+            {
+                try { DwmFlush(); } catch { }
+            }
             DateTime now = DateTime.Now;
-            deltaTime = (float)(now - lastTick).TotalSeconds;
+            float realDt = (float)(now - lastTick).TotalSeconds;
             lastTick = now;
+            // Hit-stop: when an enemy dies we briefly freeze simulation (but keep
+            // the reticle/visuals animating) for extra punch on kills.
+            if (hitStopTimer > 0f && !onMainMenu && !isPaused)
+            {
+                hitStopTimer -= realDt;
+                deltaTime = 0f;
+                reticlePulseTime += realDt;
+                if (reticleKick > 0f) reticleKick = MathF.Max(0f, reticleKick - realDt * 6f);
+                Invalidate();
+                return;
+            }
+            deltaTime = realDt;
+            // Advance the reticle's animation clock and refresh any per-frame
+            // reticle hooks (kept on the game tick so the crosshair animates at
+            // the same rate as everything else, regardless of pause state).
+            reticlePulseTime += deltaTime;
+            // Decay reticle kick toward 0 (~0.18s settle time)
+            if (reticleKick > 0f) reticleKick = MathF.Max(0f, reticleKick - deltaTime * 6f);
+            try { perFrameReticleTick?.Invoke(); } catch { }
             fpsFrames++;
             fpsTimer += deltaTime;
             if (fpsTimer >= 1f)
@@ -968,8 +1237,10 @@ namespace gamething
                     }
                 }
                 this.Invalidate();
-                // In multiplayer, don't freeze the game — just skip local input
-                if (!isMultiplayer)
+                // In multiplayer, don't freeze the game — just skip local input.
+                // Exception: when the upgrade menu is open we want the local game
+                // simulation fully halted so enemies don't keep moving behind it.
+                if (!isMultiplayer || activeUpgradePanel != null)
                     return;
             }
             if (dashCooldown > 0)
@@ -1098,6 +1369,31 @@ namespace gamething
             if (buffMessageTimer > 0)
                 buffMessageTimer -= deltaTime;
 
+            UpdateEventWaves();
+
+            if (screenWrapCooldown > 0)
+                screenWrapCooldown -= deltaTime;
+            if (screenWrap && screenWrapCooldown <= 0 && gameStartTimer > gameStartDelay)
+            {
+                bool wrapped = false;
+                if (posX < 0) { posX = ClientSize.Width - boxSize; wrapped = true; }
+                else if (posX > ClientSize.Width - boxSize) { posX = 0; wrapped = true; }
+                if (posY < 0) { posY = ClientSize.Height - boxSize; wrapped = true; }
+                else if (posY > ClientSize.Height - boxSize) { posY = 0; wrapped = true; }
+                if (wrapped)
+                {
+                    float cost = maxHealth * 0.05f;
+                    health -= cost;
+                    AddDamageNumber(posX + boxSize / 2f, posY - 8, cost, Color.MediumPurple);
+                    screenWrapCooldown = 0.35f;
+                    try { SfxPlayer.Play("teleport"); } catch { }
+                    if (health <= 0)
+                    {
+                        HandlePlayerDeath();
+                        return;
+                    }
+                }
+            }
             posX = Math.Max(0, Math.Min(posX, ClientSize.Width - boxSize));
             posY = Math.Max(0, Math.Min(posY, ClientSize.Height - boxSize));
             if (CollidesWithWall(posX, posY, boxSize))
@@ -1107,6 +1403,14 @@ namespace gamething
             }
             if (!isDashing)
                 (posX, posY) = PushOutOfWalls(posX, posY, boxSize);
+            // Overclock: fire-rate spin-up while holding the trigger.
+            if (overclock && mouseHeld && !reloading)
+                overclockHoldTime = MathF.Min(OverclockMaxHold, overclockHoldTime + deltaTime);
+            else
+                overclockHoldTime = MathF.Max(0f, overclockHoldTime - deltaTime * 2f);
+            float overclockBonus = overclock
+                ? (overclockHoldTime / OverclockMaxHold) * OverclockMaxBonus
+                : 0f;
             if (mouseHeld && gameStartTimer > gameStartDelay && !reloading && !hostDead && !(isMultiplayer && isPaused))
             {
                 if (shootCooldown <= 0 && (ammo > 0 || superActive))
@@ -1119,9 +1423,9 @@ namespace gamething
                     if (!superActive)
                     {
                         ammo--;
-                        if (ammo <= 0) reloading = true;
+                        if (ammo <= 0) { reloading = true; SfxPlayer.Play("reload", 0.5f); }
                     }
-                    shootCooldown = superActive ? 0f : Math.Max(0.05f, shootRate - fireRateBonus);
+                    shootCooldown = superActive ? 0f : Math.Max(0.05f, shootRate - fireRateBonus - overclockBonus);
                 }
                 else
                 {
@@ -1169,6 +1473,8 @@ namespace gamething
                     bossSpawnTimer = 0f;
                     bossAlive = true;
                     bossHealth = currentBossMaxHealth;
+                    SfxPlayer.Play("boss", 1f);
+                    SfxPlayer.PlayMusic("boss");
                     int side = rng.Next(4);
                     switch (side)
                     {
@@ -1221,6 +1527,7 @@ namespace gamething
                         AddDamageNumber(posX + playerSize / 2, posY, bossDamage, Color.FromArgb(255, 255, 80, 80));
                         AddScreenShake(16f);
                         hurtVignette = Math.Min(1f, hurtVignette + 0.7f);
+                        SfxPlayer.Play("hurt", 1f);
                         bossHitCooldown = 0.5f;
                         if (thorns) DamageBoss(1f);
                         if (health <= 0)
@@ -1317,7 +1624,7 @@ namespace gamething
             if (gameStartTimer > gameStartDelay)
             {
                 // Only host spawns enemies in MP. Client receives the list via state packet.
-                if (!bossAlive && (!isMultiplayer || isNetHost))
+                if (!bossAlive && (!isMultiplayer || isNetHost) && activeEvent != "coinRush")
                 {
                     enemySpawnTimer += deltaTime;
                     if (enemySpawnTimer >= enemySpawnRate)
@@ -1347,7 +1654,7 @@ namespace gamething
                 for (int i = 0; i < enemies.Count; i++)
                 {
                     if (!enemyAlive[i]) continue;
-                  
+
                     float dirX, dirY;
                     if (decoyActive)
                     {
@@ -1441,6 +1748,7 @@ namespace gamething
                             AddDamageNumber(posX + playerSize / 2, posY, dmg, Color.FromArgb(255, 255, 80, 80));
                             AddScreenShake(10f);
                             hurtVignette = Math.Min(1f, hurtVignette + 0.55f);
+                            SfxPlayer.Play("hurt", 0.8f);
                             if (bloodMoney)
                             {
                                 int scoreToAdd = (int)(dmg * 2);
@@ -1711,11 +2019,11 @@ namespace gamething
             for (int i = 0; i < enemies.Count; i++)
             {
                 if (!enemyAlive[i]) continue;
-            
+
 
                 for (int j = i + 1; j < enemies.Count; j++)
                 {
-                   
+
                     if (!enemyAlive[j]) continue;
                     float dx = enemies[j].x - enemies[i].x;
                     float dy = enemies[j].y - enemies[i].y;
@@ -1738,9 +2046,9 @@ namespace gamething
             {
                 if (enemyRespawnTimers[i] > 0)
                 {
-                    if (!bossAlive)
+                    if (!bossAlive && activeEvent != "coinRush")
                         enemyRespawnTimers[i] -= deltaTime;
-                    if (enemyRespawnTimers[i] <= 0 && !bossAlive)
+                    if (enemyRespawnTimers[i] <= 0 && !bossAlive && activeEvent != "coinRush")
                     {
                         bool respawnCanShoot = rng.NextDouble() < shootingEnemyChance;
                         bool respawnIsTank = !respawnCanShoot && rng.NextDouble() < tankEnemyChance;
@@ -1878,6 +2186,7 @@ namespace gamething
                 {
                     float bulletDmg = (explosiveFinish && nextBulletIsLast) ? 3f : 1f;
                     if (lastStand && (health <= 15f || (isMultiplayer && p2Health <= 15f))) bulletDmg *= 2f;
+                    if (glassCannon) bulletDmg *= 1.4f;
                     bossHealth -= bulletDmg;
                     bossBulletHitCooldown = bossBulletHitCooldownTime;
                     if (bossHealth <= 0)
@@ -1896,6 +2205,7 @@ namespace gamething
                     {
                         float bulletDmg = (explosiveFinish && nextBulletIsLast) ? 3f : 1f;
                         if (lastStand && (health <= 15f || (isMultiplayer && p2Health <= 15f))) bulletDmg *= 2f;
+                        if (glassCannon) bulletDmg *= 1.4f;
                         if (rng.NextDouble() >= enemyReinforceChance)
                             DamageEnemy(i, bulletDmg);
                         if (ricochetExplosion && bounces > 0)
@@ -2051,6 +2361,7 @@ namespace gamething
                         AddDamageNumber(posX + playerSize / 2, posY, enemyDamage * 0.5f, Color.FromArgb(255, 255, 80, 80));
                         AddScreenShake(6f);
                         hurtVignette = Math.Min(1f, hurtVignette + 0.35f);
+                        SfxPlayer.Play("hurt", 0.6f);
                         newHitCooldown = 0.5f;
                         if (health <= 0)
                             HandlePlayerDeath();
@@ -2087,7 +2398,12 @@ namespace gamething
             }
             parasites = newParasites;
             var newEnemyBullets = new List<(float x, float y, float velX, float velY)>();
-            foreach (var b in enemyBullets)
+            // Iterate over a snapshot: HandlePlayerDeath (triggered when a
+            // bullet takes health to 0) calls ResetGame which clears
+            // enemyBullets mid-enumeration and crashes with
+            // "Collection was modified; enumeration operation may not execute."
+            var enemyBulletsSnapshot = enemyBullets.ToArray();
+            foreach (var b in enemyBulletsSnapshot)
             {
                 float nx = b.x + b.velX * deltaTime * 60;
                 float ny = b.y + b.velY * deltaTime * 60;
@@ -2102,6 +2418,7 @@ namespace gamething
                         AddDamageNumber(posX + playerSize / 2, posY, enemyBulletDamage, Color.FromArgb(255, 255, 80, 80));
                         AddScreenShake(8f);
                         hurtVignette = Math.Min(1f, hurtVignette + 0.45f);
+                        SfxPlayer.Play("hurt", 0.7f);
                         if (bloodMoney)
                         {
                             int scoreToAdd = (int)(enemyBulletDamage * 2);
@@ -2112,7 +2429,14 @@ namespace gamething
                             ammo = Math.Min(ammo + 5, maxAmmo);
                         hitCooldown = hitCooldownTime;
                         if (health <= 0)
+                        {
                             HandlePlayerDeath();
+                            // HandlePlayerDeath ran ResetGame, which cleared
+                            // enemyBullets. Bail out so we don't overwrite it
+                            // with the stale newEnemyBullets list we were
+                            // building up.
+                            return;
+                        }
                     }
                     continue;
                 }
@@ -2619,11 +2943,18 @@ namespace gamething
 
         private void AddDamageNumber(float x, float y, float dmg, Color color)
         {
-            damageNumbers.Add((x + (float)(rng.NextDouble() * 16 - 8), y, -60f - (float)rng.NextDouble() * 30f, 0.8f, 0.8f, ((int)Math.Ceiling(dmg)).ToString(), color));
+            if (!settingShowDamageNumbers) return;
+            // Show fractional damage with one decimal place when it isn't a
+            // whole number (e.g. 0.5, 1.3) — integers stay as "3", "12" etc.
+            string text = (MathF.Abs(dmg - MathF.Round(dmg)) < 0.05f)
+                ? ((int)MathF.Round(dmg)).ToString()
+                : dmg.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+            damageNumbers.Add((x + (float)(rng.NextDouble() * 16 - 8), y, -60f - (float)rng.NextDouble() * 30f, 0.8f, 0.8f, text, color));
         }
 
         private void AddScreenShake(float amp)
         {
+            if (!settingEnableScreenShake) return;
             if (amp > screenShakeAmp) screenShakeAmp = Math.Min(28f, amp);
         }
 
@@ -2945,7 +3276,7 @@ namespace gamething
                 }
                 return;
             }
-          
+
             if (darkMode)
                 e.Graphics.Clear(Color.FromArgb(20, 20, 20));
             else
@@ -3143,12 +3474,12 @@ namespace gamething
                 // Gunners are drawn a little larger via GunnerExtraScale; tank/runner already have adjusted eSize.
                 bool isPlainNormal = !isSlowed && !isTank && !canShoot && !isRunner;
                 bool isPlainGunner = !isSlowed && !isTank && canShoot && !isRunner;
-                bool isPlainTank   = !isSlowed && isTank && !canShoot && !isRunner;
+                bool isPlainTank = !isSlowed && isTank && !canShoot && !isRunner;
                 bool isPlainRunner = !isSlowed && !isTank && !canShoot && isRunner;
                 Bitmap? enemySprite =
                       isPlainNormal ? (isParasitic ? redParasiticSpriteCropped : redEnemySpriteCropped)
                     : isPlainGunner ? (isParasitic ? gunnerParasiticSpriteCropped : gunnerSpriteCropped)
-                    : isPlainTank   ? (isParasitic ? tankParasiticSpriteCropped : tankSpriteCropped)
+                    : isPlainTank ? (isParasitic ? tankParasiticSpriteCropped : tankSpriteCropped)
                     : isPlainRunner ? (isParasitic ? runnerParasiticSpriteCropped : runnerSpriteCropped)
                     : null;
                 float spriteExtraScale = isPlainGunner ? GunnerExtraScale : 1f;
@@ -3175,28 +3506,28 @@ namespace gamething
                     DrawEnemySprite(e.Graphics, enemySprite, ecx, ecy, eSize, drawAim, enemyAlpha, spriteExtraScale);
                 }
                 else
-                using (System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath())
-                {
-                    path.AddArc(enemies[i].x, enemies[i].y, r, r, 180, 90);
-                    path.AddArc(enemies[i].x + eSize - r, enemies[i].y, r, r, 270, 90);
-                    path.AddArc(enemies[i].x + eSize - r, enemies[i].y + eSize - r, r, r, 0, 90);
-                    path.AddArc(enemies[i].x, enemies[i].y + eSize - r, r, r, 90, 90);
-                    path.CloseFigure();
+                    using (System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath())
+                    {
+                        path.AddArc(enemies[i].x, enemies[i].y, r, r, 180, 90);
+                        path.AddArc(enemies[i].x + eSize - r, enemies[i].y, r, r, 270, 90);
+                        path.AddArc(enemies[i].x + eSize - r, enemies[i].y + eSize - r, r, r, 0, 90);
+                        path.AddArc(enemies[i].x, enemies[i].y + eSize - r, r, r, 90, 90);
+                        path.CloseFigure();
 
-                    Brush enemyBrush = isSlowed ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.MediumPurple)) :
-                                       isParasitic ? new SolidBrush(Color.FromArgb(
-                                           enemyAlpha,
-                                           isTank ? Color.DarkRed.R : canShoot ? Color.OrangeRed.R : isRunner ? Color.HotPink.R : Color.Red.R,
-                                           0,
-                                           isTank ? (int)(Color.DarkRed.B * 0.5f + 80) : 80)) :
-                                       isTank ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.DarkRed)) :
-                                       canShoot ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.OrangeRed)) :
-                                       isRunner ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.HotPink)) :
-                                       new SolidBrush(Color.FromArgb(enemyAlpha, Color.Red));
+                        Brush enemyBrush = isSlowed ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.MediumPurple)) :
+                                           isParasitic ? new SolidBrush(Color.FromArgb(
+                                               enemyAlpha,
+                                               isTank ? Color.DarkRed.R : canShoot ? Color.OrangeRed.R : isRunner ? Color.HotPink.R : Color.Red.R,
+                                               0,
+                                               isTank ? (int)(Color.DarkRed.B * 0.5f + 80) : 80)) :
+                                           isTank ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.DarkRed)) :
+                                           canShoot ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.OrangeRed)) :
+                                           isRunner ? new SolidBrush(Color.FromArgb(enemyAlpha, Color.HotPink)) :
+                                           new SolidBrush(Color.FromArgb(enemyAlpha, Color.Red));
 
-                    e.Graphics.FillPath(enemyBrush, path);
-                    e.Graphics.DrawPath(new Pen(Color.FromArgb(enemyAlpha, borderPen.Color)), path);
-                }
+                        e.Graphics.FillPath(enemyBrush, path);
+                        e.Graphics.DrawPath(new Pen(Color.FromArgb(enemyAlpha, borderPen.Color)), path);
+                    }
 
                 if (i < enemyHealth.Count)
                 {
@@ -3370,23 +3701,29 @@ namespace gamething
                     new Pen(Color.FromArgb(a, darkMode ? Color.White : Color.Black)),
                     p.x - pSize / 2, p.y - pSize / 2, pSize, pSize);
             }
-            foreach (var f in deathFlashes)
+            if (settingShowKillFlashes)
             {
-                float alpha = f.timer / f.maxTimer;
-                int a = (int)(alpha * 255);
-                float radius = f.size * (1f + (1f - alpha) * 2f);
-                e.Graphics.FillEllipse(
-                    new SolidBrush(Color.FromArgb(a, 255, 200, 0)),
-                    f.x - radius, f.y - radius, radius * 2, radius * 2);
+                foreach (var f in deathFlashes)
+                {
+                    float alpha = f.timer / f.maxTimer;
+                    int a = (int)(alpha * 255);
+                    float radius = f.size * (1f + (1f - alpha) * 2f);
+                    e.Graphics.FillEllipse(
+                        new SolidBrush(Color.FromArgb(a, 255, 200, 0)),
+                        f.x - radius, f.y - radius, radius * 2, radius * 2);
+                }
             }
-            foreach (var f in hitFlashes)
+            if (settingShowHitFlashes)
             {
-                float alpha = f.timer / f.maxTimer;
-                int a = (int)(alpha * 180);
-                float radius = f.size * 0.6f;
-                e.Graphics.FillEllipse(
-                    new SolidBrush(Color.FromArgb(a, 255, 255, 255)),
-                    f.x - radius, f.y - radius, radius * 2, radius * 2);
+                foreach (var f in hitFlashes)
+                {
+                    float alpha = f.timer / f.maxTimer;
+                    int a = (int)(alpha * 180);
+                    float radius = f.size * 0.6f;
+                    e.Graphics.FillEllipse(
+                        new SolidBrush(Color.FromArgb(a, 255, 255, 255)),
+                        f.x - radius, f.y - radius, radius * 2, radius * 2);
+                }
             }
             // Death fragments — rotated colored squares
             foreach (var f in deathFragments)
@@ -3715,7 +4052,8 @@ namespace gamething
                 int alpha = (int)(MathF.Min(1f, fade * 2f) * 255);
                 // Size scales up with streak, pops on kill
                 float popScale = 1f + comboShake * 0.35f;
-                float baseSize = 22f + MathF.Min(18f, comboCount * 1.2f);
+                float baseSize = (22f + MathF.Min(18f, comboCount * 1.2f)) * scale;
+                if (baseSize < 6f) baseSize = 6f;
                 using var comboFont = new Font("Segoe UI", baseSize * popScale, FontStyle.Bold);
                 string txt = "x" + comboCount + " COMBO";
                 var sz = e.Graphics.MeasureString(txt, comboFont);
@@ -3735,7 +4073,7 @@ namespace gamething
                     e.Graphics.DrawString(txt, comboFont, br, cx + sdx, cy + sdy);
                 // timer bar below
                 float cbW = sz.Width;
-                float cbH = 4f;
+                float cbH = 4f * scale;
                 float cbY = cy + sz.Height;
                 e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb((int)(alpha * 0.3f), 0, 0, 0)), cx + sdx, cbY, cbW, cbH);
                 e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(alpha, cc)), cx + sdx, cbY, cbW * fade, cbH);
@@ -3821,6 +4159,23 @@ namespace gamething
             {
                 e.Graphics.DrawString("SANDBOX", new Font("Arial", 10 * scaleY, FontStyle.Bold),
                     textBrush, 22 * scaleX, (int)(110 * scaleY));
+            }
+
+            // Darkness event: black out the screen except a circle around the player.
+            if (activeEvent == "darkness" && !onMainMenu)
+            {
+                float dpx = posX + boxSize / 2f;
+                float dpy = posY + boxSize / 2f;
+                float dr = 160f * scale;
+                using var dpath = new System.Drawing.Drawing2D.GraphicsPath();
+                dpath.AddEllipse(dpx - dr, dpy - dr, dr * 2, dr * 2);
+                var savedClip = e.Graphics.Clip;
+                using var region = new Region(new RectangleF(0, 0, ClientSize.Width, ClientSize.Height));
+                region.Exclude(dpath);
+                e.Graphics.SetClip(region, System.Drawing.Drawing2D.CombineMode.Replace);
+                using (var darkBrush = new SolidBrush(Color.Black))
+                    e.Graphics.FillRectangle(darkBrush, 0, 0, ClientSize.Width, ClientSize.Height);
+                e.Graphics.Clip = savedClip;
             }
 
             if (buffMessageTimer > 0)
@@ -3921,13 +4276,17 @@ namespace gamething
         private void DrawAimReticle(Graphics g, float mx, float my)
         {
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            // pulse based on shoot cooldown / reload state
-            float pulse = (float)Math.Sin(Environment.TickCount / 180.0) * 0.5f + 0.5f;
+            // Pulse driven by the delta-time accumulator so the crosshair
+            // animates at the same cadence as the rest of the game (frame-rate
+            // independent, smooth at any FPS).
+            float pulse = (float)Math.Sin(reticlePulseTime * 5.5) * 0.5f + 0.5f;
             Color ringColor = reloading ? Color.FromArgb(220, 255, 200, 60)
                             : ammo <= 0 ? Color.FromArgb(220, 255, 80, 80)
                             : Color.FromArgb(220, 240, 240, 240);
             float baseR = 14f * scale;
-            float r = baseR + pulse * 2f * scale;
+            // Kick scales the ring up to ~1.6x then springs back as reticleKick decays.
+            float kickScale = 1f + reticleKick * 0.6f;
+            float r = (baseR + pulse * 2f * scale) * kickScale;
             using (var outer = new Pen(ringColor, 2.0f * scale))
                 g.DrawEllipse(outer, mx - r, my - r, r * 2, r * 2);
             // crosshair lines with a center gap
@@ -3959,6 +4318,10 @@ namespace gamething
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern short GetKeyState(int keyCode);
+
+        // DwmFlush blocks until the next monitor vblank — cheap vsync for GDI games.
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        private static extern int DwmFlush();
 
         private System.Drawing.Point mousePos = System.Drawing.Point.Empty;
 
@@ -4028,6 +4391,8 @@ namespace gamething
             float velY = MathF.Sin(angle) * bulletSpeed;
             var (bx, by) = GetGunTipWorldAtAngle(pcx, pcy, playerSize, angle);
             muzzleFlashes.Add((bx, by, angle, 0.08f, 0.08f));
+            SfxPlayer.Play("shoot", 0.35f);
+            reticleKick = 1f;
             if (doubleTap)
             {
                 doubleTapCounter++;
@@ -4104,7 +4469,7 @@ namespace gamething
                 for (int x = 0; x < bmp.Width; x++)
                 {
                     int o = row + x * 4;
-                    int db = Math.Abs(px[o]     - refB);
+                    int db = Math.Abs(px[o] - refB);
                     int dg = Math.Abs(px[o + 1] - refG);
                     int dr = Math.Abs(px[o + 2] - refR);
                     if (db <= tolerance && dg <= tolerance && dr <= tolerance)
@@ -4292,7 +4657,7 @@ namespace gamething
                     // Preserve near-black outlines (keeps crisp border on any tint).
                     if (l < 0.12f) continue;
                     HslToRgb(tH, tS, l, out byte r2, out byte g2, out byte b2);
-                    px[o]     = b2;
+                    px[o] = b2;
                     px[o + 1] = g2;
                     px[o + 2] = r2;
                 }
@@ -4311,9 +4676,9 @@ namespace gamething
             float d = max - min;
             if (d < 1e-6f) { h = 0f; s = 0f; return; }
             s = l > 0.5f ? d / (2f - max - min) : d / (max + min);
-            if (max == rf)      h = (gf - bf) / d + (gf < bf ? 6f : 0f);
+            if (max == rf) h = (gf - bf) / d + (gf < bf ? 6f : 0f);
             else if (max == gf) h = (bf - rf) / d + 2f;
-            else                h = (rf - gf) / d + 4f;
+            else h = (rf - gf) / d + 4f;
             h *= 60f;
         }
 
@@ -4455,6 +4820,16 @@ namespace gamething
             ricochetExplosion = false;
             bloodMoney = false;
             parasiteImmune = false;
+            screenWrap = false;
+            screenWrapCooldown = 0f;
+            overclock = false;
+            overclockHoldTime = 0f;
+            glassCannon = false;
+            hitStopTimer = 0f;
+            activeEvent = "";
+            activeEventTime = 0f;
+            nextEventTime = 55f;
+            eventSpawnTimer = 0f;
             HidePauseButtons();
             unlockParticles.Clear();
             unlockAnimTimer = 0f;
@@ -4479,7 +4854,7 @@ namespace gamething
             enemyAlive = Enumerable.Repeat(true, enemies.Count).ToList();
             enemyRespawnTimers = new List<float>(new float[enemies.Count]);
             enemySmackCooldown = new List<float>(new float[enemies.Count]);
-            enemyAimAngle      = new List<float>(new float[enemies.Count]);
+            enemyAimAngle = new List<float>(new float[enemies.Count]);
             enemyCanShoot = enemies.Select(_ => rng.NextDouble() < shootingEnemyChance).ToList();
             enemyIsTank = enemies.Select((_, idx) => !enemyCanShoot[idx] && rng.NextDouble() < tankEnemyChance).ToList();
             enemyIsRunner = enemies.Select((_, idx) => !enemyCanShoot[idx] && !enemyIsTank[idx] && rng.NextDouble() < runnerEnemyChance).ToList();
@@ -4823,6 +5198,9 @@ namespace gamething
                 new { Title = "Parasite Immune",    Icon = "🧬", Description = "Parasites can't hurt you",             Cost = 1200, Stack = "", Category = "Defensive"},
                 new { Title = "Last Stand", Icon = "💢", Description = "Below 15 HP: bullets deal 2x damage", Cost = 1100, Stack = "", Category = "Offensive" },
                 new { Title = "Smart Bounce",    Icon = "🧠", Description = "+1 bounce; bounced bullets seek nearest enemy", Cost = 1220, Stack = "", Category = "Offensive" },
+                new { Title = "Screen Wrap",     Icon = "🌀", Description = "Teleport across screen at edge (-5% HP)",     Cost = 1760, Stack = "", Category = "Defensive" },
+                new { Title = "Overclock",       Icon = "📈", Description = "Fire rate ramps up while holding fire",       Cost = 1180, Stack = "", Category = "Offensive" },
+                new { Title = "Glass Cannon",    Icon = "🔮", Description = "-25% max HP, +40% bullet damage",             Cost = 1450, Stack = "", Category = "Offensive" },
             };
 
             int cardWidth = (int)(155 * s);
@@ -5188,6 +5566,7 @@ namespace gamething
                 {
                     if (score < cost) return;
                     if (capturedCard.Tag is int t && t == int.MaxValue) return;
+                    SfxPlayer.Play("upgrade", 0.7f);
                     // In multiplayer as client, send upgrade to host
                     if (isMultiplayer && !isNetHost)
                     {
@@ -5315,8 +5694,15 @@ namespace gamething
             this.Controls.Add(reticleOverlay);
             reticleOverlay.BringToFront();
 
-            var reticleTick = new System.Windows.Forms.Timer();
-            reticleTick.Interval = 33;
+            // Drive the upgrade-menu reticle on a dedicated high-priority 60fps
+            // Timer rather than Application.Idle. The upgrade menu generates
+            // heavy WM_PAINT traffic (every affordable card invalidates each
+            // frame for the pulse border) and that flooded the message queue
+            // enough that Idle-driven ticks were starved before any purchase
+            // was made — making the crosshair feel laggy until the score
+            // dropped and most cards stopped repainting. A Timer ticks
+            // independently of Idle and stays smooth either way.
+            var reticleTick = new System.Windows.Forms.Timer { Interval = 16 };
             reticleTick.Tick += (s2, e2) =>
             {
                 if (upgradeForm.IsDisposed)
@@ -5328,11 +5714,85 @@ namespace gamething
                 var p = this.PointToClient(Cursor.Position);
                 reticleOverlay.Location = new Point(p.X - reticleOverlay.Width / 2, p.Y - reticleOverlay.Height / 2);
                 reticleOverlay.RefreshShape();
+                reticleOverlay.Invalidate();
                 reticleOverlay.BringToFront();
             };
             reticleTick.Start();
 
             AnimateZoomIn(upgradeForm);
+        }
+
+        private void UpdateEventWaves()
+        {
+            if (onMainMenu || bossAlive || sandboxMode || gameStartTimer <= gameStartDelay) return;
+            if (isMultiplayer && !isNetHost) return;
+
+            if (activeEventTime > 0f)
+            {
+                activeEventTime -= deltaTime;
+                eventSpawnTimer += deltaTime;
+                switch (activeEvent)
+                {
+                    case "coinRush":
+                        // Coins rain from the top edge while the event runs.
+                        if (eventSpawnTimer >= 0.45f)
+                        {
+                            eventSpawnTimer = 0f;
+                            float cx = rng.Next(20, Math.Max(40, ClientSize.Width - 20));
+                            coins.Add((cx, -20f, 0f, 3.5f));
+                        }
+                        break;
+                    case "hail":
+                        // Bullets rain straight down at random X positions.
+                        if (eventSpawnTimer >= 0.11f)
+                        {
+                            eventSpawnTimer = 0f;
+                            int count = 1 + rng.Next(0, 2);
+                            for (int k = 0; k < count; k++)
+                            {
+                                float hx = rng.Next(0, Math.Max(1, ClientSize.Width));
+                                enemyBullets.Add((hx, -10f, 0f, enemyBulletSpeed * 0.9f));
+                            }
+                        }
+                        break;
+                    case "darkness":
+                        // Visual-only; the overlay is drawn in OnPaint.
+                        break;
+                }
+                if (activeEventTime <= 0f)
+                {
+                    activeEvent = "";
+                    activeEventTime = 0f;
+                    eventSpawnTimer = 0f;
+                    buffMessage = "✓ Event ended";
+                    buffMessageTimer = 2f;
+                }
+                return;
+            }
+
+            nextEventTime -= deltaTime;
+            if (nextEventTime <= 0f)
+            {
+                activeEvent = EventPool[rng.Next(EventPool.Length)];
+                activeEventTime = activeEvent switch
+                {
+                    "coinRush" => 10f,
+                    "darkness" => 12f,
+                    "hail" => 9f,
+                    _ => 10f,
+                };
+                eventSpawnTimer = 0f;
+                nextEventTime = 55f + (float)rng.NextDouble() * 25f;
+                buffMessage = activeEvent switch
+                {
+                    "coinRush" => "💰 COIN RUSH!",
+                    "darkness" => "🌑 DARKNESS!",
+                    "hail"     => "☄️ HAIL STORM!",
+                    _ => ""
+                };
+                buffMessageTimer = 3f;
+                try { SfxPlayer.Play("upgrade", 0.5f); } catch { }
+            }
         }
 
         private void ApplyEnemyBuff()
@@ -5569,12 +6029,15 @@ namespace gamething
             hitFlashes.Add((enemies[i].x + hFlashSize / 2, enemies[i].y + hFlashSize / 2, 0.1f, 0.1f, hFlashSize));
             AddDamageNumber(enemies[i].x + boxSize / 2, enemies[i].y, damage, Color.FromArgb(255, 255, 220, 80));
             AddScreenShake(2f);
+            SfxPlayer.Play("hit", 0.6f);
             bool isTank = i < enemyIsTank.Count && enemyIsTank[i];
             bool canShoot = i < enemyCanShoot.Count && enemyCanShoot[i];
             bool isRunner = i < enemyIsRunner.Count && enemyIsRunner[i];
 
-                if (enemyHealth[i] <= 0)
+            if (enemyHealth[i] <= 0)
             {
+                // Hit-stop: brief freeze to punch up the kill.
+                if (settingEnableHitStop && hitStopTimer < 0.035f) hitStopTimer = 0.035f;
                 // Bestiary tracking
                 string enemyCategory = isTank ? "Tank" : canShoot ? "Gunner" : isRunner ? "Runner" : "Normal";
                 if (beastiaryKills.ContainsKey(enemyCategory))
@@ -5656,6 +6119,10 @@ namespace gamething
                 comboTimer = 0f;
                 if (comboCount > bestCombo) bestCombo = comboCount;
                 comboShake = 1f;
+                SfxPlayer.Play("die", isTank ? 0.95f : 0.75f);
+                // Combo milestone chime at 5 / 10 / 20 kills
+                if (comboCount == 5 || comboCount == 10 || comboCount == 20 || (comboCount > 20 && comboCount % 10 == 0))
+                    SfxPlayer.Play("combo", 0.8f);
                 enemyRespawnTimers[i] = enemyRespawnTime;
                 totalKills++;
                 health = Math.Min(health + lifeSteal, maxHealth);
@@ -5677,7 +6144,12 @@ namespace gamething
         {
             if (!bossAlive) return;
             bossHealth -= dmg;
-            if (bossHealth <= 0) HandleBossDefeated();
+            if (bossHealth <= 0)
+            {
+                // Bigger hit-stop for the final boss hit.
+                if (settingEnableHitStop && hitStopTimer < 0.15f) hitStopTimer = 0.15f;
+                HandleBossDefeated();
+            }
         }
 
         private bool BossOverlaps(float x, float y, float w, float h)
@@ -5690,6 +6162,9 @@ namespace gamething
         private void HandleBossDefeated()
         {
             bossAlive = false;
+            SfxPlayer.Play("die", 1f);
+            SfxPlayer.Play("upgrade", 0.8f);
+            SfxPlayer.PlayMusic("game");
             int waveSize = 20 + bossesDefeated * 5;
             for (int w = 0; w < waveSize; w++)
             {
@@ -5998,6 +6473,7 @@ namespace gamething
                 lastTick = DateTime.Now;
                 this.Focus();
                 if (isNetHost) { p2X = posX + 50; p2Y = posY; p2Health = maxHealth; p2MaxHealth = maxHealth; }
+                try { SfxPlayer.PlayMusic("game"); } catch { }
             }
             else
             {
@@ -6016,6 +6492,7 @@ namespace gamething
             lastTick = DateTime.Now;
             onMainMenu = true;
             isPaused = true;
+            try { SfxPlayer.PlayMusic("menu"); } catch { }
 
             if (pendingUnlockAnimation >= 0)
             {
@@ -6061,7 +6538,7 @@ namespace gamething
                     diffBtn.Size = new Size(170, 42);
                     int col = d % 3;
                     int row = d / 3;
-                    diffBtn.Location = new Point((int)(40 * scaleX) + col * 180, ClientSize.Height / 2 - 80 + row * 52);
+                    diffBtn.Location = new Point((int)(40 * scaleX) + (int)(col * 180 * scale), ClientSize.Height / 2 - (int)(80 * scale) + (int)(row * 52 * scale));
                     diffBtn.BackColor = locked ? Color.FromArgb(40, 40, 40) : DifficultyBgColors[d];
                     diffBtn.ForeColor = locked ? Color.Gray : Color.White;
                     diffBtn.FlatStyle = FlatStyle.Flat;
@@ -6097,7 +6574,7 @@ namespace gamething
                         Button sandboxBtn = new Button();
                         sandboxBtn.Text = "🧪 Sandbox";
                         sandboxBtn.Size = new Size(250, 55);
-                        sandboxBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 70);
+                        sandboxBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)(70 * scale));
                         sandboxBtn.BackColor = Color.FromArgb(80, 60, 120);
                         sandboxBtn.ForeColor = Color.White;
                         sandboxBtn.FlatStyle = FlatStyle.Flat;
@@ -6109,14 +6586,14 @@ namespace gamething
                         Button backBtn3 = new Button();
                         backBtn3.Text = "◀ Back";
                         backBtn3.Size = new Size(250, 35);
-                        backBtn3.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 140);
+                        backBtn3.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)(140 * scale));
                         backBtn3.BackColor = Color.FromArgb(60, 60, 60);
                         backBtn3.ForeColor = Color.White;
                         backBtn3.FlatStyle = FlatStyle.Flat;
                         backBtn3.Font = new Font("Arial", 12);
                         backBtn3.Cursor = Cursors.Hand;
 
-                      
+
 
                         endlessBtn.Click += (s3, e3) =>
                         {
@@ -6136,6 +6613,7 @@ namespace gamething
                             isPaused = false;
                             ApplyDifficulty();
                             ResetGame();
+                            try { SfxPlayer.PlayMusic("game"); } catch { }
                         };
 
                         sandboxBtn.Click += (s3, e3) =>
@@ -6156,6 +6634,7 @@ namespace gamething
                             isPaused = false;
                             ApplyDifficulty();
                             ResetGame();
+                            try { SfxPlayer.PlayMusic("game"); } catch { }
                         };
 
                         backBtn3.Click += (s3, e3) =>
@@ -6169,6 +6648,9 @@ namespace gamething
                         this.Controls.Add(endlessBtn);
                         this.Controls.Add(sandboxBtn);
                         this.Controls.Add(backBtn3);
+                        ScaleControlOnce(endlessBtn);
+                        ScaleControlOnce(sandboxBtn);
+                        ScaleControlOnce(backBtn3);
                         endlessBtn.BringToFront();
                         sandboxBtn.BringToFront();
                         backBtn3.BringToFront();
@@ -6176,12 +6658,13 @@ namespace gamething
 
                     diffButtons.Add(diffBtn);
                     this.Controls.Add(diffBtn);
+                    ScaleControlOnce(diffBtn);
                     diffBtn.BringToFront();
                 }
 
                 backBtn2.Text = "◀ Back";
                 backBtn2.Size = new Size(250, 35);
-                backBtn2.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 - 80 + 3 * 52 + 10);
+                backBtn2.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)((-80 + 3 * 52 + 10) * scale));
                 backBtn2.BackColor = Color.FromArgb(60, 60, 60);
                 backBtn2.ForeColor = Color.White;
                 backBtn2.FlatStyle = FlatStyle.Flat;
@@ -6195,6 +6678,7 @@ namespace gamething
                     AnimateZoomInGroup(new Control[] { menuPlayBtn, menuQuitBtn, menuPrefsBtn, menuHistoryBtn!, menuBestiaryBtn!, menuAchievementsBtn!, menuShopBtn, menuMultiplayerBtn! });
                 };
                 this.Controls.Add(backBtn2);
+                ScaleControlOnce(backBtn2);
                 backBtn2.BringToFront();
             };
             menuPlayBtn.MouseEnter += (s, e) => menuPlayBtn.BackColor = Color.FromArgb(50, 130, 50);
@@ -6219,9 +6703,9 @@ namespace gamething
             menuQuitBtn.MouseLeave += (s, e) => menuQuitBtn.BackColor = Color.FromArgb(100, 40, 40);
 
             menuPrefsBtn = new Button();
-            menuPrefsBtn.Text = "🎨 Preferences";
+            menuPrefsBtn.Text = "⚙ Settings";
             menuPrefsBtn.Size = new Size(250, 55);
-            menuPrefsBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 160);
+            menuPrefsBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)(160 * scale));
             menuPrefsBtn.BackColor = Color.FromArgb(80, 60, 120);
             menuPrefsBtn.ForeColor = Color.White;
             menuPrefsBtn.FlatStyle = FlatStyle.Flat;
@@ -6230,135 +6714,7 @@ namespace gamething
             menuPrefsBtn.Cursor = Cursors.Hand;
             menuPrefsBtn.MouseEnter += (s, e) => menuPrefsBtn.BackColor = Color.FromArgb(100, 80, 150);
             menuPrefsBtn.MouseLeave += (s, e) => menuPrefsBtn.BackColor = Color.FromArgb(80, 60, 120);
-            menuPrefsBtn.Click += (s, e) =>
-            {
-                onPreferences = true;
-                menuPlayBtn.Visible = false;
-                menuQuitBtn.Visible = false;
-                menuPrefsBtn.Visible = false;
-                int panelW = (int)(600 * scaleX);
-                int panelH = (int)(500 * scaleY);
-                int panelX = ClientSize.Width / 2 - panelW / 2;
-                int panelY = ClientSize.Height / 2 - panelH / 2;
-
-                menuPrefsBackBtn = new Button();
-                menuPrefsBackBtn.Text = "◀ Back";
-                menuPrefsBackBtn.Size = new Size(250, 40);
-                menuPrefsBackBtn.Location = new Point(panelX + panelW / 2 - 125, panelY + panelH - (int)(60 * scaleY));
-                menuPrefsBackBtn.BackColor = Color.FromArgb(60, 60, 60);
-                menuPrefsBackBtn.ForeColor = Color.White;
-                menuPrefsBackBtn.FlatStyle = FlatStyle.Flat;
-                menuPrefsBackBtn.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 80);
-                menuPrefsBackBtn.Font = new Font("Arial", 14);
-                menuPrefsBackBtn.Cursor = Cursors.Hand;
-                menuPrefsBackBtn.Click += (s2, e2) =>
-                {
-                    onPreferences = false;
-                    AnimateZoomInGroup(new Control[] { menuPlayBtn, menuQuitBtn, menuPrefsBtn });
-                    this.Controls.Remove(menuPrefsBackBtn);
-
-                    // Remove color buttons
-                    var toRemove = this.Controls.OfType<Control>()
-                        .Where(c => c.Tag?.ToString() == "prefControl")
-                        .ToList();
-                    foreach (var c in toRemove)
-                        this.Controls.Remove(c);
-                };
-                this.Controls.Add(menuPrefsBackBtn);
-                menuPrefsBackBtn.BringToFront();
-
-                // Add color buttons
-                var presetColors = new[]
-                {
-        new { Name = "Blue",   Color = Color.FromArgb(0, 50, 255)   },
-        new { Name = "Red",    Color = Color.FromArgb(220, 30, 30)  },
-        new { Name = "Green",  Color = Color.FromArgb(30, 180, 30)  },
-        new { Name = "Purple", Color = Color.FromArgb(140, 0, 220)  },
-        new { Name = "Orange", Color = Color.FromArgb(255, 140, 0)  },
-        new { Name = "Cyan",   Color = Color.FromArgb(0, 200, 220)  },
-        new { Name = "Pink",   Color = Color.FromArgb(255, 80, 180) },
-        new { Name = "Yellow", Color = Color.FromArgb(220, 200, 0)  },
-        new { Name = "White",  Color = Color.FromArgb(240, 240, 240)},
-        new { Name = "Black",  Color = Color.FromArgb(20, 20, 20)   },
-        new { Name = "Gold",   Color = Color.FromArgb(212, 175, 55) },
-        new { Name = "Teal",   Color = Color.FromArgb(0, 150, 130)  },
-    };
-
-
-
-                int colorX = panelX + (int)(20 * scaleX);
-                int colorY = panelY + (int)(120 * scaleY);
-                foreach (var preset in presetColors)
-                {
-                    var capturedColor = preset.Color;
-                    Button colorBtn = new Button();
-                    colorBtn.Size = new Size(60, 60);
-                    colorBtn.Location = new Point(colorX, colorY);
-                    colorBtn.BackColor = preset.Color;
-                    colorBtn.FlatStyle = FlatStyle.Flat;
-                    colorBtn.FlatAppearance.BorderColor = Color.White;
-                    colorBtn.Cursor = Cursors.Hand;
-                    colorBtn.Tag = "prefControl";
-                    colorBtn.Click += (s2, e2) => { playerColor = capturedColor; };
-                    colorBtn.MouseEnter += (s2, e2) => colorBtn.FlatAppearance.BorderSize = 3;
-                    colorBtn.MouseLeave += (s2, e2) => colorBtn.FlatAppearance.BorderSize = 1;
-                    this.Controls.Add(colorBtn);
-                    colorBtn.BringToFront();
-                    colorX += 70;
-                    if (colorX > (int)(40 * scaleX) + 70 * 6)
-                    {
-                        colorX = (int)(40 * scaleX);
-                        colorY += 70;
-                    }
-                }
-
-                Button customBtn = new Button();
-                customBtn.Text = "🎨 Custom";
-                customBtn.Size = new Size(130, 40);
-                customBtn.Location = new Point(panelX + (int)(20 * scaleX), panelY + (int)(290 * scaleY));
-                customBtn.BackColor = Color.FromArgb(60, 60, 60);
-                customBtn.ForeColor = Color.White;
-                customBtn.FlatStyle = FlatStyle.Flat;
-                customBtn.Tag = "prefControl";
-                customBtn.Cursor = Cursors.Hand;
-                customBtn.Click += (s2, e2) =>
-                {
-                    using ColorDialog cd = new ColorDialog();
-                    cd.Color = playerColor;
-                    if (cd.ShowDialog() == DialogResult.OK)
-                        playerColor = cd.Color;
-                };
-                this.Controls.Add(customBtn);
-                customBtn.BringToFront();
-
-                // Name box
-                TextBox nameBox = new TextBox();
-                nameBox.Text = playerName;
-                nameBox.Font = new Font("Arial", 14);
-                nameBox.Size = new Size(200, 35);
-                nameBox.Location = new Point(panelX + (int)(20 * scaleX), panelY + (int)(390 * scaleY));
-                nameBox.MaxLength = 8;
-                nameBox.BackColor = Color.FromArgb(50, 50, 50);
-                nameBox.ForeColor = Color.White;
-                nameBox.Tag = "prefControl";
-                nameBox.TextChanged += (s2, e2) =>
-                {
-                    string input = nameBox.Text.Trim().ToUpper();
-                    if (!string.IsNullOrWhiteSpace(input) && input != "YOU")
-                    {
-                        playerName = input;
-                        nameBox.ForeColor = Color.White;
-                    }
-                    else
-                    {
-                        playerName = "YOU";
-                        nameBox.ForeColor = Color.Red;
-                    }
-                    SavePlayerName();
-                };
-                this.Controls.Add(nameBox);
-                nameBox.BringToFront();
-            };
+            menuPrefsBtn.Click += (s, e) => OpenSettingsMenu();
             this.Controls.Add(menuPrefsBtn);
             menuPrefsBtn.BringToFront();
 
@@ -6367,20 +6723,20 @@ namespace gamething
             menuPlayBtn.BringToFront();
             menuQuitBtn.BringToFront();
             menuPlayBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2);
-            menuQuitBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 70);
+            menuQuitBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)(70 * scale));
 
             EventHandler resizeHandler = null!;
             resizeHandler = (s, e) =>
             {
                 menuPlayBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2);
-                menuQuitBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 70);
-                menuPrefsBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 160);
+                menuQuitBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)(70 * scale));
+                menuPrefsBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)(160 * scale));
             };
             menuHistoryBtn = new Button();
             menuHistoryBtn.Text = "📜 Run History";
             // ... rest of setup
             menuHistoryBtn.Size = new Size(250, 45);
-            menuHistoryBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 230);
+            menuHistoryBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)(230 * scale));
             menuHistoryBtn.BackColor = Color.FromArgb(50, 50, 70);
             menuHistoryBtn.ForeColor = Color.White;
             menuHistoryBtn.FlatStyle = FlatStyle.Flat;
@@ -6396,7 +6752,7 @@ namespace gamething
             menuBestiaryBtn = new Button();
             menuBestiaryBtn.Text = "📖 Bestiary";
             menuBestiaryBtn.Size = new Size(250, 45);
-            menuBestiaryBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 285);
+            menuBestiaryBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)(285 * scale));
             menuBestiaryBtn.BackColor = Color.FromArgb(50, 50, 70);
             menuBestiaryBtn.ForeColor = Color.White;
             menuBestiaryBtn.FlatStyle = FlatStyle.Flat;
@@ -6412,7 +6768,7 @@ namespace gamething
             menuAchievementsBtn = new Button();
             menuAchievementsBtn.Text = "🏆 Achievements";
             menuAchievementsBtn.Size = new Size(250, 45);
-            menuAchievementsBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 340);
+            menuAchievementsBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)(340 * scale));
             menuAchievementsBtn.BackColor = Color.FromArgb(50, 50, 70);
             menuAchievementsBtn.ForeColor = Color.White;
             menuAchievementsBtn.FlatStyle = FlatStyle.Flat;
@@ -6428,7 +6784,7 @@ namespace gamething
             menuShopBtn = new Button();
             menuShopBtn.Text = "🔴 Red Coin Shop";
             menuShopBtn.Size = new Size(250, 45);
-            menuShopBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 395);
+            menuShopBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)(395 * scale));
             menuShopBtn.BackColor = Color.FromArgb(80, 30, 30);
             menuShopBtn.ForeColor = Color.White;
             menuShopBtn.FlatStyle = FlatStyle.Flat;
@@ -6444,7 +6800,7 @@ namespace gamething
             menuMultiplayerBtn = new Button();
             menuMultiplayerBtn.Text = "🌐 Multiplayer";
             menuMultiplayerBtn.Size = new Size(250, 45);
-            menuMultiplayerBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + 450);
+            menuMultiplayerBtn.Location = new Point((int)(40 * scaleX), ClientSize.Height / 2 + (int)(450 * scale));
             menuMultiplayerBtn.BackColor = Color.FromArgb(40, 80, 120);
             menuMultiplayerBtn.ForeColor = Color.White;
             menuMultiplayerBtn.FlatStyle = FlatStyle.Flat;
@@ -6461,6 +6817,16 @@ namespace gamething
             menuQuitBtn.Click += (s, e) => this.ClientSizeChanged -= resizeHandler;
             menuPrefsBtn.Click += (s, e) => this.ClientSizeChanged -= resizeHandler;
 
+            // Apply scale to all main-menu buttons so they fit smaller resolutions.
+            ScaleControlOnce(menuPlayBtn);
+            ScaleControlOnce(menuQuitBtn);
+            ScaleControlOnce(menuPrefsBtn);
+            ScaleControlOnce(menuHistoryBtn);
+            ScaleControlOnce(menuBestiaryBtn);
+            ScaleControlOnce(menuAchievementsBtn);
+            ScaleControlOnce(menuShopBtn);
+            ScaleControlOnce(menuMultiplayerBtn);
+
             // Zoom-in the whole main menu group on first show
             AnimateZoomInGroup(new Control[] {
                 menuPlayBtn, menuQuitBtn, menuPrefsBtn,
@@ -6471,13 +6837,13 @@ namespace gamething
         private void ApplyDifficulty()
         {
             // Gradual progression across 9 difficulty levels
-            float[] speeds =     { 3.0f, 3.5f, 5.0f, 5.3f, 5.6f, 6.0f, 6.3f, 6.7f, 7.0f };
-            float[] damages =    { 0.5f, 0.6f, 1.0f, 1.1f, 1.3f, 1.5f, 1.7f, 1.85f, 2.0f };
-            float[] bossTimers = { 180f, 165f, 120f, 110f, 100f, 90f,  80f,  70f,  60f };
-            float[] bossHps =    { 150f, 180f, 300f, 325f, 350f, 400f, 430f, 465f, 500f };
-            float[] bossRates =  { 2.5f, 2.4f, 2.0f, 1.95f, 1.9f, 1.8f, 1.7f, 1.6f, 1.5f };
+            float[] speeds = { 3.0f, 3.5f, 5.0f, 5.3f, 5.6f, 6.0f, 6.3f, 6.7f, 7.0f };
+            float[] damages = { 0.5f, 0.6f, 1.0f, 1.1f, 1.3f, 1.5f, 1.7f, 1.85f, 2.0f };
+            float[] bossTimers = { 180f, 165f, 120f, 110f, 100f, 90f, 80f, 70f, 60f };
+            float[] bossHps = { 150f, 180f, 300f, 325f, 350f, 400f, 430f, 465f, 500f };
+            float[] bossRates = { 2.5f, 2.4f, 2.0f, 1.95f, 1.9f, 1.8f, 1.7f, 1.6f, 1.5f };
             float[] scoreMults = { 3.0f, 2.5f, 1.0f, 1.2f, 1.5f, 2.0f, 2.0f, 2.0f, 2.0f };
-            float[] parasitic =  { 0f,   0f,   0.01f, 0.02f, 0.03f, 0.05f, 0.07f, 0.085f, 0.1f };
+            float[] parasitic = { 0f, 0f, 0.01f, 0.02f, 0.03f, 0.05f, 0.07f, 0.085f, 0.1f };
 
             int d = Math.Clamp(difficulty, 0, 8);
             currentEnemySpeed = speeds[d] * scale;
@@ -6549,6 +6915,564 @@ namespace gamething
                 }
             }
             catch { }
+        }
+
+        // Simple key=value persisted settings file (one line per setting).
+        private void SaveSettings()
+        {
+            try
+            {
+                var lines = new[]
+                {
+                    "hitStop=" + (settingEnableHitStop ? 1 : 0),
+                    "screenShake=" + (settingEnableScreenShake ? 1 : 0),
+                    "damageNumbers=" + (settingShowDamageNumbers ? 1 : 0),
+                    "hitFlashes=" + (settingShowHitFlashes ? 1 : 0),
+                    "killFlashes=" + (settingShowKillFlashes ? 1 : 0),
+                    "master=" + SfxPlayer.MasterVolume.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+                    "sfx=" + SfxPlayer.SfxVolume.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+                    "music=" + SfxPlayer.MusicBaseVolume.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+                    "sfxEnabled=" + (SfxPlayer.Enabled ? 1 : 0),
+                    "fullscreen=" + (isBorderlessFullscreen ? 1 : 0),
+                    "vsync=" + (settingVsync ? 1 : 0),
+                };
+                File.WriteAllLines(Path.Combine(GetSaveDir(), "settings.dat"), lines);
+            }
+            catch { }
+        }
+
+        private void LoadSettings()
+        {
+            try
+            {
+                string path = Path.Combine(GetSaveDir(), "settings.dat");
+                if (!File.Exists(path)) return;
+                foreach (var line in File.ReadAllLines(path))
+                {
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0) continue;
+                    string k = line.Substring(0, eq).Trim();
+                    string v = line.Substring(eq + 1).Trim();
+                    switch (k)
+                    {
+                        case "hitStop":       settingEnableHitStop = v == "1"; break;
+                        case "screenShake":   settingEnableScreenShake = v == "1"; break;
+                        case "damageNumbers": settingShowDamageNumbers = v == "1"; break;
+                        case "hitFlashes":    settingShowHitFlashes = v == "1"; break;
+                        case "killFlashes":   settingShowKillFlashes = v == "1"; break;
+                        case "master":
+                            if (float.TryParse(v, System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out float mv))
+                                SfxPlayer.SetMasterVolume(mv);
+                            break;
+                        case "sfx":
+                            if (float.TryParse(v, System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out float sv))
+                                SfxPlayer.SetSfxVolume(sv);
+                            break;
+                        case "music":
+                            if (float.TryParse(v, System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out float mu))
+                                SfxPlayer.SetMusicVolume(mu);
+                            break;
+                        case "sfxEnabled": SfxPlayer.Enabled = v == "1"; break;
+                        case "vsync": settingVsync = v == "1"; break;
+                        case "fullscreen":
+                            // Apply after form is shown; if we're called during load, the
+                            // form may not be visible yet, so defer via BeginInvoke.
+                            bool wantFs = v == "1";
+                            if (wantFs != isBorderlessFullscreen)
+                            {
+                                try { this.BeginInvoke((Action)(() => ToggleBorderlessFullscreen())); }
+                                catch { }
+                            }
+                            break;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        // Tabbed settings menu that replaces the old Preferences panel.
+        private const string SettingsControlTag = "settingsControl";
+        private void OpenSettingsMenu()
+        {
+            onPreferences = true;
+            menuPlayBtn.Visible = false;
+            menuQuitBtn.Visible = false;
+            menuPrefsBtn.Visible = false;
+            if (menuHistoryBtn != null) menuHistoryBtn.Visible = false;
+            if (menuBestiaryBtn != null) menuBestiaryBtn.Visible = false;
+            if (menuAchievementsBtn != null) menuAchievementsBtn.Visible = false;
+            if (menuShopBtn != null) menuShopBtn.Visible = false;
+            if (menuMultiplayerBtn != null) menuMultiplayerBtn.Visible = false;
+
+            int panelW = (int)(720 * scale);
+            int panelH = (int)(520 * scale);
+            int panelX = ClientSize.Width / 2 - panelW / 2;
+            int panelY = ClientSize.Height / 2 - panelH / 2;
+
+            // Background panel (click-blocker + frame).
+            Panel bg = new Panel
+            {
+                Size = new Size(panelW, panelH),
+                Location = new Point(panelX, panelY),
+                BackColor = Color.FromArgb(30, 30, 40),
+                BorderStyle = BorderStyle.FixedSingle,
+                Tag = SettingsControlTag,
+            };
+            this.Controls.Add(bg);
+            bg.BringToFront();
+
+            Label title = new Label
+            {
+                Text = "⚙  Settings",
+                Font = new Font("Segoe UI", 18f, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                AutoSize = true,
+                Location = new Point(panelX + 20, panelY + 14),
+                Tag = SettingsControlTag,
+            };
+            this.Controls.Add(title);
+            title.BringToFront();
+
+            // Tab strip
+            string[] tabs = { "Preferences", "Gameplay", "Visual", "Audio", "About" };
+            Panel contentHost = new Panel
+            {
+                Size = new Size(panelW - 40, panelH - 140),
+                Location = new Point(panelX + 20, panelY + 70),
+                BackColor = Color.FromArgb(22, 22, 30),
+                Tag = SettingsControlTag,
+            };
+            this.Controls.Add(contentHost);
+            contentHost.BringToFront();
+
+            Button[] tabButtons = new Button[tabs.Length];
+            int tabX = panelX + 20;
+            int tabY = panelY + 50;
+            int tabW = (panelW - 40) / tabs.Length;
+            Action<int>? selectTab = null;
+            for (int i = 0; i < tabs.Length; i++)
+            {
+                int idx = i;
+                Button tb = new Button
+                {
+                    Text = tabs[i],
+                    Size = new Size(tabW - 4, 26),
+                    Location = new Point(tabX + i * tabW, tabY),
+                    BackColor = Color.FromArgb(50, 50, 70),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Arial", 9f, FontStyle.Bold),
+                    Cursor = Cursors.Hand,
+                    Tag = SettingsControlTag,
+                };
+                tb.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 110);
+                tb.Click += (s2, e2) => selectTab?.Invoke(idx);
+                this.Controls.Add(tb);
+                tb.BringToFront();
+                tabButtons[i] = tb;
+            }
+
+            selectTab = (idx) =>
+            {
+                contentHost.Controls.Clear();
+                for (int i = 0; i < tabButtons.Length; i++)
+                    tabButtons[i].BackColor = i == idx
+                        ? Color.FromArgb(90, 90, 140)
+                        : Color.FromArgb(50, 50, 70);
+                switch (idx)
+                {
+                    case 0: BuildPreferencesTab(contentHost); break;
+                    case 1: BuildGameplayTab(contentHost); break;
+                    case 2: BuildVisualTab(contentHost); break;
+                    case 3: BuildAudioTab(contentHost); break;
+                    case 4: BuildAboutTab(contentHost); break;
+                }
+            };
+
+            // Back button
+            Button back = new Button
+            {
+                Text = "◀ Back",
+                Size = new Size(200, 36),
+                Location = new Point(panelX + panelW / 2 - 100, panelY + panelH - 50),
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Arial", 12f, FontStyle.Bold),
+                Cursor = Cursors.Hand,
+                Tag = SettingsControlTag,
+            };
+            back.FlatAppearance.BorderColor = Color.FromArgb(90, 90, 90);
+            back.Click += (s2, e2) => CloseSettingsMenu();
+            this.Controls.Add(back);
+            back.BringToFront();
+
+            selectTab(0);
+        }
+
+        private void CloseSettingsMenu()
+        {
+            onPreferences = false;
+            SaveSettings();
+            var toRemove = this.Controls.OfType<Control>()
+                .Where(c => c.Tag is string ts && ts == SettingsControlTag)
+                .ToList();
+            foreach (var c in toRemove) this.Controls.Remove(c);
+            menuPlayBtn.Visible = true;
+            menuQuitBtn.Visible = true;
+            menuPrefsBtn.Visible = true;
+            if (menuHistoryBtn != null) menuHistoryBtn.Visible = true;
+            if (menuBestiaryBtn != null) menuBestiaryBtn.Visible = true;
+            if (menuAchievementsBtn != null) menuAchievementsBtn.Visible = true;
+            if (menuShopBtn != null) menuShopBtn.Visible = true;
+            if (menuMultiplayerBtn != null) menuMultiplayerBtn.Visible = true;
+            AnimateZoomInGroup(new Control[] { menuPlayBtn, menuQuitBtn, menuPrefsBtn });
+        }
+
+        private void BuildPreferencesTab(Panel host)
+        {
+            // Player color presets + custom picker + name box
+            var presets = new (string Name, Color Color)[]
+            {
+                ("Blue",   Color.FromArgb(0, 50, 255)),
+                ("Red",    Color.FromArgb(220, 30, 30)),
+                ("Green",  Color.FromArgb(30, 180, 30)),
+                ("Purple", Color.FromArgb(140, 0, 220)),
+                ("Orange", Color.FromArgb(255, 140, 0)),
+                ("Cyan",   Color.FromArgb(0, 200, 220)),
+                ("Pink",   Color.FromArgb(255, 80, 180)),
+                ("Yellow", Color.FromArgb(220, 200, 0)),
+                ("White",  Color.FromArgb(240, 240, 240)),
+                ("Black",  Color.FromArgb(20, 20, 20)),
+                ("Gold",   Color.FromArgb(212, 175, 55)),
+                ("Teal",   Color.FromArgb(0, 150, 130)),
+            };
+
+            Label lblColor = new Label
+            {
+                Text = "Player Color",
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(20, 20),
+                Font = new Font("Arial", 11f, FontStyle.Bold),
+            };
+            host.Controls.Add(lblColor);
+
+            int cx = 20, cy = 50;
+            for (int i = 0; i < presets.Length; i++)
+            {
+                var captured = presets[i].Color;
+                Button cb = new Button
+                {
+                    Size = new Size(48, 48),
+                    Location = new Point(cx, cy),
+                    BackColor = captured,
+                    FlatStyle = FlatStyle.Flat,
+                    Cursor = Cursors.Hand,
+                };
+                cb.FlatAppearance.BorderColor = Color.White;
+                cb.Click += (s2, e2) => playerColor = captured;
+                cb.MouseEnter += (s2, e2) => cb.FlatAppearance.BorderSize = 3;
+                cb.MouseLeave += (s2, e2) => cb.FlatAppearance.BorderSize = 1;
+                host.Controls.Add(cb);
+                cx += 54;
+                if (cx > host.Width - 60) { cx = 20; cy += 54; }
+            }
+
+            Button custom = new Button
+            {
+                Text = "🎨 Custom",
+                Size = new Size(130, 34),
+                Location = new Point(20, cy + 60),
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
+            };
+            custom.Click += (s2, e2) =>
+            {
+                using ColorDialog cd = new ColorDialog { Color = playerColor };
+                if (cd.ShowDialog() == DialogResult.OK) playerColor = cd.Color;
+            };
+            host.Controls.Add(custom);
+
+            Label lblName = new Label
+            {
+                Text = "Name",
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(170, cy + 66),
+                Font = new Font("Arial", 10f, FontStyle.Bold),
+            };
+            host.Controls.Add(lblName);
+
+            TextBox nameBox = new TextBox
+            {
+                Text = playerName,
+                Font = new Font("Arial", 12f),
+                Size = new Size(180, 30),
+                Location = new Point(220, cy + 62),
+                MaxLength = 8,
+                BackColor = Color.FromArgb(50, 50, 50),
+                ForeColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle,
+            };
+            nameBox.TextChanged += (s2, e2) =>
+            {
+                string input = nameBox.Text.Trim().ToUpper();
+                if (!string.IsNullOrWhiteSpace(input) && input != "YOU")
+                {
+                    playerName = input;
+                    nameBox.ForeColor = Color.White;
+                }
+                else
+                {
+                    playerName = "YOU";
+                    nameBox.ForeColor = Color.Red;
+                }
+                SavePlayerName();
+            };
+            host.Controls.Add(nameBox);
+        }
+
+        private CheckBox MakeToggle(string label, int x, int y, bool initial, Action<bool> onChange)
+        {
+            CheckBox cb = new CheckBox
+            {
+                Text = "  " + label,
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                AutoSize = true,
+                Checked = initial,
+                Font = new Font("Arial", 11f),
+                Location = new Point(x, y),
+                Cursor = Cursors.Hand,
+            };
+            cb.CheckedChanged += (s2, e2) => onChange(cb.Checked);
+            return cb;
+        }
+
+        private void BuildGameplayTab(Panel host)
+        {
+            Label lbl = new Label
+            {
+                Text = "Gameplay",
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(20, 20),
+                Font = new Font("Arial", 11f, FontStyle.Bold),
+            };
+            host.Controls.Add(lbl);
+            host.Controls.Add(MakeToggle("Hit-stop (freeze-frame on kills)", 30, 60, settingEnableHitStop, v => { settingEnableHitStop = v; SaveSettings(); }));
+            host.Controls.Add(MakeToggle("Screen shake",                     30, 95, settingEnableScreenShake, v => { settingEnableScreenShake = v; SaveSettings(); }));
+        }
+
+        private void BuildVisualTab(Panel host)
+        {
+            Label dispLbl = new Label
+            {
+                Text = "Display",
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(20, 20),
+                Font = new Font("Arial", 11f, FontStyle.Bold),
+            };
+            host.Controls.Add(dispLbl);
+            host.Controls.Add(MakeToggle("Borderless Fullscreen (F11)", 30, 55, isBorderlessFullscreen, v =>
+            {
+                if (v != isBorderlessFullscreen) ToggleBorderlessFullscreen();
+                SaveSettings();
+            }));
+            host.Controls.Add(MakeToggle("V-Sync (cap tick rate to monitor refresh)", 30, 90, settingVsync, v =>
+            {
+                settingVsync = v;
+                SaveSettings();
+            }));
+
+            Label lbl = new Label
+            {
+                Text = "Effects",
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(20, 140),
+                Font = new Font("Arial", 11f, FontStyle.Bold),
+            };
+            host.Controls.Add(lbl);
+            host.Controls.Add(MakeToggle("Hit flashes",    30, 175, settingShowHitFlashes, v => { settingShowHitFlashes = v; SaveSettings(); }));
+            host.Controls.Add(MakeToggle("Kill flashes",   30, 210, settingShowKillFlashes, v => { settingShowKillFlashes = v; SaveSettings(); }));
+            host.Controls.Add(MakeToggle("Damage numbers", 30, 245, settingShowDamageNumbers, v => { settingShowDamageNumbers = v; SaveSettings(); }));
+        }
+
+        private TrackBar MakeSlider(int x, int y, int w, float initial01, Action<float> onChange)
+        {
+            TrackBar tb = new TrackBar
+            {
+                Minimum = 0,
+                Maximum = 100,
+                Value = (int)Math.Round(Math.Clamp(initial01, 0f, 1f) * 100),
+                TickFrequency = 10,
+                Size = new Size(w, 40),
+                Location = new Point(x, y),
+                BackColor = Color.FromArgb(22, 22, 30),
+            };
+            tb.ValueChanged += (s2, e2) => onChange(tb.Value / 100f);
+            return tb;
+        }
+
+        private void BuildAudioTab(Panel host)
+        {
+            Label lbl = new Label
+            {
+                Text = "Audio",
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(20, 20),
+                Font = new Font("Arial", 11f, FontStyle.Bold),
+            };
+            host.Controls.Add(lbl);
+
+            host.Controls.Add(MakeToggle("Enable SFX", 30, 55, SfxPlayer.Enabled, v =>
+            {
+                SfxPlayer.Enabled = v;
+                SaveSettings();
+            }));
+
+            AddSlider(host, "Master", 95, SfxPlayer.MasterVolume, v => { SfxPlayer.SetMasterVolume(v); SaveSettings(); });
+            AddSlider(host, "SFX",    155, SfxPlayer.SfxVolume,    v => { SfxPlayer.SetSfxVolume(v);    SaveSettings(); });
+            AddSlider(host, "Music",  215, SfxPlayer.MusicBaseVolume, v => { SfxPlayer.SetMusicVolume(v); SaveSettings(); });
+
+            Button testBtn = new Button
+            {
+                Text = "🔊 Test SFX",
+                Size = new Size(140, 34),
+                Location = new Point(30, 280),
+                BackColor = Color.FromArgb(60, 80, 60),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
+            };
+            testBtn.Click += (s2, e2) => { try { SfxPlayer.Play("shoot", 1f); } catch { } };
+            host.Controls.Add(testBtn);
+        }
+
+        private void AddSlider(Panel host, string name, int y, float init, Action<float> onChange)
+        {
+            Label l = new Label
+            {
+                Text = name,
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(30, y),
+                Font = new Font("Arial", 10f, FontStyle.Bold),
+            };
+            host.Controls.Add(l);
+            Label valueLabel = new Label
+            {
+                Text = ((int)Math.Round(init * 100)) + "%",
+                ForeColor = Color.LightGray,
+                AutoSize = true,
+                Location = new Point(host.Width - 80, y),
+                Font = new Font("Arial", 10f),
+            };
+            host.Controls.Add(valueLabel);
+            TrackBar tb = MakeSlider(100, y - 6, host.Width - 200, init, v =>
+            {
+                valueLabel.Text = ((int)Math.Round(v * 100)) + "%";
+                onChange(v);
+            });
+            host.Controls.Add(tb);
+        }
+
+        private void BuildAboutTab(Panel host)
+        {
+            string version;
+            try
+            {
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                version = asm.GetName().Version?.ToString() ?? "1.0.0";
+            }
+            catch { version = "1.0.0"; }
+
+            Label title2 = new Label
+            {
+                Text = "Red Guy Takeover",
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(20, 20),
+                Font = new Font("Arial", 16f, FontStyle.Bold),
+            };
+            host.Controls.Add(title2);
+
+            Label ver = new Label
+            {
+                Text = "Version " + version,
+                ForeColor = Color.LightGray,
+                AutoSize = true,
+                Location = new Point(20, 55),
+                Font = new Font("Arial", 10f),
+            };
+            host.Controls.Add(ver);
+
+            Label credit = new Label
+            {
+                Text = "A juice-soaked arena shooter.",
+                ForeColor = Color.LightGray,
+                AutoSize = true,
+                Location = new Point(20, 80),
+                Font = new Font("Arial", 10f, FontStyle.Italic),
+            };
+            host.Controls.Add(credit);
+
+            Label linkLbl = new Label
+            {
+                Text = "GitHub:",
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(20, 130),
+                Font = new Font("Arial", 10f, FontStyle.Bold),
+            };
+            host.Controls.Add(linkLbl);
+
+            string githubUrl = "https://github.com/kacper-chr/RedGuyTakeover";
+            LinkLabel link = new LinkLabel
+            {
+                Text = githubUrl,
+                AutoSize = true,
+                Location = new Point(90, 130),
+                LinkColor = Color.FromArgb(120, 180, 255),
+                ActiveLinkColor = Color.White,
+                BackColor = Color.Transparent,
+                Font = new Font("Arial", 10f),
+            };
+            link.LinkClicked += (s2, e2) =>
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = githubUrl,
+                        UseShellExecute = true,
+                    });
+                }
+                catch { }
+            };
+            host.Controls.Add(link);
+
+            Label notes = new Label
+            {
+                Text = ".NET " + Environment.Version + "   •   " +
+                       (Environment.Is64BitProcess ? "64-bit" : "32-bit") + "   •   " +
+                       Environment.OSVersion.Platform,
+                ForeColor = Color.DimGray,
+                AutoSize = true,
+                Location = new Point(20, 180),
+                Font = new Font("Arial", 9f),
+            };
+            host.Controls.Add(notes);
         }
         private Button? pauseResumeBtn = null;
         private void ShowPauseButtons()
@@ -6623,6 +7547,11 @@ namespace gamething
             };
             this.Controls.Add(pauseResumeBtn);
             this.Controls.Add(pauseQuitBtn);
+            ScaleControlOnce(pauseResumeBtn);
+            ScaleControlOnce(pauseQuitBtn);
+            // Reposition relative to current ClientSize after scaling.
+            pauseResumeBtn.Location = new Point(ClientSize.Width / 2 - pauseResumeBtn.Width / 2, ClientSize.Height / 2 + (int)(10 * scale));
+            pauseQuitBtn.Location = new Point(ClientSize.Width / 2 - pauseQuitBtn.Width / 2, pauseResumeBtn.Bottom + (int)(15 * scale));
             pauseResumeBtn.BringToFront();
             pauseQuitBtn.BringToFront();
             AnimateZoomInGroup(new Control[] { pauseResumeBtn, pauseQuitBtn });
@@ -7394,21 +8323,27 @@ namespace gamething
 
             var pkt = new GameStatePacket
             {
-                HostX = posX / nw, HostY = posY / nh,
-                HostHealth = health, HostMaxHealth = maxHealth,
+                HostX = posX / nw,
+                HostY = posY / nh,
+                HostHealth = health,
+                HostMaxHealth = maxHealth,
                 HostScore = score,
                 HostDashing = isDashing,
 
-                ClientX = p2X / nw, ClientY = p2Y / nh,
-                ClientHealth = p2Health, ClientMaxHealth = p2MaxHealth,
+                ClientX = p2X / nw,
+                ClientY = p2Y / nh,
+                ClientHealth = p2Health,
+                ClientMaxHealth = p2MaxHealth,
                 ClientDashing = p2Dashing,
                 ClientDashCooldown = p2DashCooldown,
 
                 TimeAlive = timeAlive,
                 TotalKills = totalKills,
                 BossActive = bossAlive,
-                BossX = bossX / nw, BossY = bossY / nh,
-                BossHealth = bossHealth, BossMaxHealth = bossMaxHealth,
+                BossX = bossX / nw,
+                BossY = bossY / nh,
+                BossHealth = bossHealth,
+                BossMaxHealth = bossMaxHealth,
 
                 SuperActive = superActive,
                 SuperTimer = superTimer,
@@ -7682,11 +8617,11 @@ namespace gamething
                     enemyCanShoot[i] = state.EnemyType[i] == 2;
                     byte flags = (state.EnemyEffectFlags != null && i < state.EnemyEffectFlags.Length)
                         ? state.EnemyEffectFlags[i] : (byte)0;
-                    enemyIsRunner[i]    = (flags & 0x01) != 0;
+                    enemyIsRunner[i] = (flags & 0x01) != 0;
                     enemyIsBerserker[i] = (flags & 0x02) != 0;
                     enemyIsParasitic[i] = (flags & 0x04) != 0;
-                    enemyIsPhasing[i]   = (flags & 0x08) != 0;
-                    enemyIsVisible[i]   = (flags & 0x10) != 0;
+                    enemyIsPhasing[i] = (flags & 0x08) != 0;
+                    enemyIsVisible[i] = (flags & 0x10) != 0;
                     if (state.EnemyHealthPacked != null && i < state.EnemyHealthPacked.Length)
                         enemyHealth[i] = state.EnemyHealthPacked[i] / 16f;
                 }
@@ -7940,7 +8875,7 @@ namespace gamething
             190, 450, 470, 500, 510, 600, 610, 650, 660, 670, 690, 730, 750, 790, 800, 800,
             900, 950, 950, 1000, 1010, 1200, 1230, 1250, 1290, 1300, 1350, 1390, 1410, 1600,
             2200, 3100, 950, 750, 900, 1300, 600, 1400, 820, 1500, 1400, 1100, 1200, 1100,
-            1220
+            1220, 1760, 1180, 1450
         };
 
         private void ApplyUpgradeByIndex(int index)
@@ -8004,6 +8939,18 @@ namespace gamething
                 case 42: parasiteImmune = true; break;
                 case 43: lastStand = true; break;
                 case 44: smartBounce = true; ricochetBounces += 1; break;
+                case 45: screenWrap = true; break;
+                case 46: overclock = true; break;
+                case 47:
+                    glassCannon = true;
+                    maxHealth = Math.Max(1, (int)(maxHealth * 0.75f));
+                    health = Math.Min(health, maxHealth);
+                    if (isMultiplayer)
+                    {
+                        p2MaxHealth = Math.Max(1, (int)(p2MaxHealth * 0.75f));
+                        p2Health = Math.Min(p2Health, p2MaxHealth);
+                    }
+                    break;
             }
         }
 
@@ -8406,6 +9353,7 @@ namespace gamething
                 if (asHost) { p2X = posX + 50; p2Y = posY; p2Health = maxHealth; p2MaxHealth = maxHealth; }
                 lastTick = DateTime.Now;
                 this.Focus();
+                try { SfxPlayer.PlayMusic("game"); } catch { }
             }
 
             backBtn.Click += (s, e) => Cleanup();

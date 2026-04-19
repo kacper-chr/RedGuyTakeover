@@ -12,8 +12,8 @@
     <SupportedOSPlatformVersion>8.0</SupportedOSPlatformVersion>
     <Title>Red Guy Takeover</Title>
     <PackAsTool>True</PackAsTool>
-    <Version>1.6.0</Version>
-    <AssemblyVersion>1.6.0.0</AssemblyVersion>
+    <Version>1.7.0</Version>
+    <AssemblyVersion>1.7.0.0</AssemblyVersion>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
@@ -58,6 +58,7 @@
   <ItemGroup>
     <PackageReference Include="Autoupdater.NET.Official" Version="1.9.2" />
     <PackageReference Include="LiteNetLib" Version="2.1.2" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.5" />
   </ItemGroup>
 
